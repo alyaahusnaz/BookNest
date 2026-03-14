@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -63,6 +64,152 @@ class CoverLabel(QLabel):
             self.setPixmap(scaled)
 
 
+class BookDetailDialog(QDialog):
+    """Book details dialog shown when a user clicks a book card."""
+
+    @staticmethod
+    def _status_to_display(status_value):
+        return "Completed" if (status_value or "").strip().lower() == "completed" else "Currently Reading"
+
+    @staticmethod
+    def _display_to_status(display_value):
+        return "completed" if (display_value or "").strip().lower() == "completed" else "reading"
+
+    def __init__(self, book: dict, parent=None, remove_callback=None, edit_book_callback=None):
+        super().__init__(parent)
+        self.setWindowTitle("Book Details")
+        self.setMinimumSize(680, 420)
+        self._remove_callback = remove_callback
+        self._edit_book_callback = edit_book_callback
+        self._book = dict(book)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        content = QHBoxLayout()
+        content.setSpacing(16)
+
+        cover = CoverLabel(book.get("cover_img", ""), 280)
+        cover.setFixedWidth(210)
+        cover.setStyleSheet("background: #2a3250; border-radius: 10px;")
+        content.addWidget(cover)
+
+        info_col = QVBoxLayout()
+        info_col.setSpacing(8)
+
+        self.title_lbl = QLabel(book.get("title") or "Unknown title")
+        self.title_lbl.setWordWrap(True)
+        self.title_lbl.setStyleSheet("font-size: 24px; font-weight: 700; color: #11162a;")
+        info_col.addWidget(self.title_lbl)
+
+        self.author_lbl = QLabel(f"Author: {book.get('authors') or 'Unknown author'}")
+        self.author_lbl.setWordWrap(True)
+        self.author_lbl.setStyleSheet("font-size: 13px; color: #4b5474;")
+        info_col.addWidget(self.author_lbl)
+
+        rating_value = float(book.get("rating") or 0)
+        stars = "★" * max(0, min(5, int(round(rating_value))))
+        self.rating_lbl = QLabel(f"Rating: {rating_value:.1f}  {stars}")
+        self.rating_lbl.setStyleSheet("font-size: 13px; color: #1b2133; font-weight: 600;")
+        info_col.addWidget(self.rating_lbl)
+
+        self.status_lbl = QLabel(f"Status: {self._status_to_display(book.get('status'))}")
+        self.status_lbl.setStyleSheet("font-size: 13px; color: #1b2133; font-weight: 600;")
+        info_col.addWidget(self.status_lbl)
+
+        description_title = QLabel("Description")
+        description_title.setStyleSheet("font-size: 13px; color: #4b5474; font-weight: 700;")
+        info_col.addWidget(description_title)
+
+        self.description_lbl = QLabel(book.get("description") or "No description available.")
+        self.description_lbl.setWordWrap(True)
+        self.description_lbl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.description_lbl.setStyleSheet("font-size: 12px; color: #3f4661;")
+        info_col.addWidget(self.description_lbl, 1)
+
+        content.addLayout(info_col, 1)
+        root.addLayout(content, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        if self._edit_book_callback is not None:
+            edit_btn = buttons.addButton("Edit Book Details", QDialogButtonBox.ActionRole)
+            edit_btn.clicked.connect(self._handle_edit_book_clicked)
+        if self._remove_callback is not None:
+            remove_btn = buttons.addButton("Remove from Shelf", QDialogButtonBox.DestructiveRole)
+            remove_btn.clicked.connect(self._handle_remove_clicked)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+    def _handle_remove_clicked(self):
+        if self._remove_callback is None:
+            return
+        removed = self._remove_callback()
+        if removed:
+            self.accept()
+
+    def _handle_edit_book_clicked(self):
+        if self._edit_book_callback is None:
+            return
+
+        edit_dialog = QDialog(self)
+        edit_dialog.setWindowTitle("Edit Book Details")
+        edit_dialog.setMinimumWidth(480)
+        form = QFormLayout(edit_dialog)
+
+        title_input = QLineEdit(self._book.get("title") or "")
+        form.addRow("Title", title_input)
+
+        author_input = QLineEdit(self._book.get("authors") or "")
+        form.addRow("Author", author_input)
+
+        cover_input = QLineEdit(self._book.get("cover_img") or "")
+        form.addRow("Cover URL", cover_input)
+
+        description_input = QTextEdit()
+        description_input.setPlainText(self._book.get("description") or "")
+        description_input.setMinimumHeight(120)
+        form.addRow("Description", description_input)
+
+        rating_input = QSpinBox()
+        rating_input.setRange(1, 5)
+        rating_input.setValue(max(1, min(5, int(round(float(self._book.get("rating") or 1))))))
+        form.addRow("Rating", rating_input)
+
+        status_input = QComboBox()
+        status_input.addItems(["Currently Reading", "Completed"])
+        status_input.setCurrentText(self._status_to_display(self._book.get("status")))
+        form.addRow("Status", status_input)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(edit_dialog.accept)
+        buttons.rejected.connect(edit_dialog.reject)
+        form.addRow(buttons)
+
+        if edit_dialog.exec() != QDialog.Accepted:
+            return
+
+        updated = {
+            "title": title_input.text().strip(),
+            "authors": author_input.text().strip(),
+            "cover_img": cover_input.text().strip(),
+            "description": description_input.toPlainText().strip(),
+            "rating": int(rating_input.value()),
+            "status": self._display_to_status(status_input.currentText()),
+        }
+
+        saved = self._edit_book_callback(updated)
+        if saved:
+            self._book.update(updated)
+            self.title_lbl.setText(updated["title"] or "Unknown title")
+            self.author_lbl.setText(f"Author: {updated['authors'] or 'Unknown author'}")
+            stars = "★" * max(0, min(5, int(round(float(updated.get("rating") or 0)))))
+            self.rating_lbl.setText(f"Rating: {float(updated.get('rating') or 0):.1f}  {stars}")
+            self.status_lbl.setText(f"Status: {self._status_to_display(updated.get('status'))}")
+            self.description_lbl.setText(updated["description"] or "No description available.")
+
+
 class BookRecommendationApp(QWidget):
 
     def __init__(self, user_id):
@@ -72,6 +219,7 @@ class BookRecommendationApp(QWidget):
         seed_user_bookshelf_from_ratings(self.user_id)
         self.books_index = self._load_books_index()
         self.cover_index = self._load_cover_index()
+        self.book_metadata_index = self._load_book_metadata_index()
         self.title_to_book_id = {}
         for book_id, title in self.books_index.items():
             self.title_to_book_id.setdefault(title, book_id)
@@ -260,6 +408,29 @@ class BookRecommendationApp(QWidget):
 
         return {}
 
+    def _load_book_metadata_index(self):
+        conn = connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                book_id,
+                COALESCE(authors, ''),
+                COALESCE(description, '')
+            FROM books
+            """
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        result = {}
+        for book_id, authors, description in rows:
+            result[str(book_id)] = {
+                "authors": (authors or "").strip(),
+                "description": (description or "").strip(),
+            }
+        return result
+
     def _mock_metadata(self, title):
         score = abs(hash(title))
         rating = 3.7 + (score % 13) / 10
@@ -286,6 +457,7 @@ class BookRecommendationApp(QWidget):
         for title in titles:
             meta = self._mock_metadata(title)
             book_id = self.title_to_book_id.get(title, "")
+            book_meta = self.book_metadata_index.get(book_id, {})
             items.append(
                 {
                     "title": title,
@@ -295,6 +467,8 @@ class BookRecommendationApp(QWidget):
                     "match": meta["match"],
                     "genre": meta["genre"],
                     "cover_img": self.cover_index.get(book_id, ""),
+                    "authors": book_meta.get("authors") or "Unknown author",
+                    "description": book_meta.get("description") or "No description available.",
                 }
             )
 
@@ -334,12 +508,14 @@ class BookRecommendationApp(QWidget):
     def _build_book_card(self, item):
         card = QFrame()
         card.setObjectName("recCard")
+        card.setFixedSize(220, 360)
+        card.setCursor(Qt.PointingHandCursor)
 
         layout = QVBoxLayout(card)
         layout.setContentsMargins(0, 0, 0, 10)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
-        cover = CoverLabel(item.get("cover_img", ""), 145)
+        cover = CoverLabel(item.get("cover_img", ""), 130)
         cover.setObjectName("recCover")
         layout.addWidget(cover)
 
@@ -356,13 +532,33 @@ class BookRecommendationApp(QWidget):
 
         title = QLabel(item["title"])
         title.setObjectName("recTitle")
+        title.setWordWrap(True)
         title.setContentsMargins(10, 0, 10, 0)
         layout.addWidget(title)
 
-        byline = QLabel(f"Rating {item['rating']:.1f} ({item['votes']:,})")
-        byline.setObjectName("subtleText")
+        author_name = item.get("authors") or "Unknown author"
+        author_name = author_name.split(",")[0].strip() if author_name else "Unknown author"
+        author = QLabel(f"by {author_name}")
+        author.setObjectName("recAuthor")
+        author.setContentsMargins(10, 0, 10, 0)
+        layout.addWidget(author)
+
+        stars = "★" * max(1, min(5, int(round(float(item.get("rating") or 0)))))
+        byline = QLabel(f"{stars}  {item['rating']:.1f} ({item['votes']:,})")
+        byline.setObjectName("recRating")
         byline.setContentsMargins(10, 0, 10, 0)
         layout.addWidget(byline)
+
+        description = item.get("description") or "No description available."
+        if len(description) > 108:
+            description = description[:105].rstrip() + "..."
+        description_lbl = QLabel(description)
+        description_lbl.setWordWrap(True)
+        description_lbl.setObjectName("recDescription")
+        description_lbl.setContentsMargins(10, 0, 10, 0)
+        layout.addWidget(description_lbl)
+
+        layout.addStretch()
 
         button = QPushButton("Add to Library")
         button.setObjectName("primaryBtn")
@@ -370,7 +566,138 @@ class BookRecommendationApp(QWidget):
         button.clicked.connect(lambda _, rec=item: self.add_to_library(rec))
         layout.addWidget(button)
 
+        def _open_details(_event=None):
+            self.open_book_details(item)
+
+        card.mousePressEvent = _open_details
+        cover.mousePressEvent = _open_details
+        title.mousePressEvent = _open_details
+        author.mousePressEvent = _open_details
+        byline.mousePressEvent = _open_details
+        description_lbl.mousePressEvent = _open_details
+
         return card
+
+    def _get_book_detail(self, book_id):
+        if not book_id:
+            return None
+
+        conn = connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(title, ''),
+                COALESCE(authors, ''),
+                COALESCE(description, ''),
+                COALESCE(cover_img, '')
+            FROM books
+            WHERE CAST(book_id AS CHAR) = %s
+            LIMIT 1
+            """,
+            (str(book_id),),
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return None
+
+        return {
+            "title": row[0],
+            "authors": row[1],
+            "description": row[2],
+            "cover_img": row[3],
+        }
+
+    def open_book_details(self, item):
+        db_detail = self._get_book_detail(item.get("book_id"))
+        payload = {
+            "title": item.get("title", ""),
+            "authors": "",
+            "description": "",
+            "cover_img": item.get("cover_img", ""),
+            "rating": item.get("rating", 0),
+            "status": "reading",
+        }
+        if db_detail:
+            payload.update(db_detail)
+
+        def _edit_book(updated_data):
+            return self._save_book_details(item, payload, updated_data)
+
+        dialog = BookDetailDialog(payload, self, edit_book_callback=_edit_book)
+        dialog.exec()
+
+    def _save_book_details(self, item, payload, updated_data):
+        book_id = str(item.get("book_id") or "").strip()
+        if not book_id:
+            QMessageBox.warning(self, "Edit Failed", "This recommendation has no book ID.")
+            return False
+
+        title = updated_data.get("title") or payload.get("title") or item.get("title") or f"Book {book_id}"
+        authors = updated_data.get("authors") or ""
+        description = updated_data.get("description") or ""
+        cover_img = updated_data.get("cover_img") or ""
+        rating = int(updated_data.get("rating") or 1)
+        status = (updated_data.get("status") or payload.get("status") or "reading").strip().lower()
+        status = "completed" if status == "completed" else "reading"
+
+        conn = connect()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO books (book_id, title, authors, description, genres, cover_img)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    title = VALUES(title),
+                    authors = VALUES(authors),
+                    description = VALUES(description),
+                    cover_img = VALUES(cover_img)
+                """,
+                (
+                    book_id,
+                    title,
+                    authors,
+                    description,
+                    None,
+                    cover_img,
+                ),
+            )
+
+            cursor.execute(
+                "UPDATE bookshelf SET rating = %s, status = %s WHERE user_id = %s AND CAST(book_id AS CHAR) = %s",
+                (rating, status, self.user_id, book_id),
+            )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            QMessageBox.warning(self, "Save Failed", f"Could not save book changes.\n{exc}")
+            conn.close()
+            return False
+        conn.close()
+
+        self.books_index[book_id] = title
+        self.cover_index[book_id] = cover_img
+        self.book_metadata_index[book_id] = {
+            "authors": authors,
+            "description": description,
+        }
+        self.title_to_book_id[title] = book_id
+
+        payload.update(
+            {
+                "title": title,
+                "authors": authors,
+                "description": description,
+                "cover_img": cover_img,
+                "rating": rating,
+                "status": status,
+            }
+        )
+        QMessageBox.information(self, "Saved", "Book details updated.")
+        return True
 
     def add_to_library(self, recommendation):
         book_id = recommendation.get("book_id")
@@ -475,19 +802,22 @@ class BookRecommendationApp(QWidget):
             }
 
             QLabel#bannerTitle {
-                color: #f4f6ff;
-                font-size: 38px;
+                color: #ffffff;
+                font-size: 34px;
                 font-weight: 700;
+                background: transparent;
             }
 
             QLabel#bannerSubtitle {
-                color: #d8e4ff;
-                font-size: 19px;
+                color: #ffffff;
+                font-size: 16px;
+                background: transparent;
             }
 
             QLabel#bannerChips {
-                color: #d5e6ff;
-                font-size: 13px;
+                color: #ffffff;
+                font-size: 12px;
+                background: transparent;
             }
 
             QLabel#bannerIcon {
@@ -499,7 +829,7 @@ class BookRecommendationApp(QWidget):
             }
 
             QLabel#sectionTitle {
-                font-size: 34px;
+                font-size: 20px;
                 font-weight: 700;
                 color: #11162a;
             }
@@ -546,8 +876,25 @@ class BookRecommendationApp(QWidget):
 
             QLabel#recTitle {
                 color: #1b2133;
-                font-size: 26px;
-                font-weight: 700;
+                font-size: 16px;
+                font-weight: 600;
+            }
+
+            QLabel#recAuthor {
+                color: #4c5575;
+                font-size: 12px;
+                font-weight: 500;
+            }
+
+            QLabel#recRating {
+                color: #2e6a3c;
+                font-size: 11px;
+                font-weight: 600;
+            }
+
+            QLabel#recDescription {
+                color: #5c6688;
+                font-size: 11px;
             }
 
             QPushButton#primaryBtn {
@@ -682,12 +1029,10 @@ class DashboardWindow(QWidget):
         self.stat_total = self._build_stat_card("Total Books", "0")
         self.stat_reading = self._build_stat_card("Currently Reading", "0")
         self.stat_completed = self._build_stat_card("Completed", "0")
-        self.stat_high_rated = self._build_stat_card("High Rated", "0")
 
         self.stats_grid.addWidget(self.stat_total, 0, 0)
         self.stats_grid.addWidget(self.stat_reading, 0, 1)
         self.stats_grid.addWidget(self.stat_completed, 0, 2)
-        self.stats_grid.addWidget(self.stat_high_rated, 0, 3)
 
         layout.addLayout(self.stats_grid)
         return card
@@ -842,12 +1187,10 @@ class DashboardWindow(QWidget):
         total = len(books)
         reading = sum(1 for item in books if item["status"] == "reading")
         completed = sum(1 for item in books if item["status"] == "completed")
-        high_rated = sum(1 for item in books if int(item["rating"]) >= 4)
 
         self.stat_total.stat_value_label.setText(str(total))
         self.stat_reading.stat_value_label.setText(str(reading))
         self.stat_completed.stat_value_label.setText(str(completed))
-        self.stat_high_rated.stat_value_label.setText(str(high_rated))
 
     def _render_shelf_books(self, books):
         while self.shelf_layout.count():
@@ -867,6 +1210,7 @@ class DashboardWindow(QWidget):
         card = QFrame()
         card.setObjectName("bookCard")
         card.setFixedSize(180, 290)
+        card.setCursor(Qt.PointingHandCursor)
         card.setStyleSheet(
             "QFrame#bookCard { background: #ffffff; border-radius: 10px; border: 1px solid #e3e8f3; }"
         )
@@ -899,7 +1243,141 @@ class DashboardWindow(QWidget):
         status_lbl.setContentsMargins(8, 0, 8, 0)
         layout.addWidget(status_lbl)
 
+        def _open_details(_event=None):
+            self.open_book_details(item)
+
+        card.mousePressEvent = _open_details
+        cover.mousePressEvent = _open_details
+        title_lbl.mousePressEvent = _open_details
+        author_lbl.mousePressEvent = _open_details
+        status_lbl.mousePressEvent = _open_details
+
         return card
+
+    def open_book_details(self, item):
+        payload = {
+            "title": item.get("title", ""),
+            "authors": item.get("authors", ""),
+            "description": item.get("description", ""),
+            "cover_img": item.get("cover_img", ""),
+            "rating": item.get("rating", 0),
+            "status": item.get("status", "reading"),
+        }
+
+        def _remove_current_book():
+            return self.remove_from_shelf(item)
+
+        def _edit_current_book(updated_data):
+            return self.save_book_details(item, updated_data)
+
+        dialog = BookDetailDialog(
+            payload,
+            self,
+            remove_callback=_remove_current_book,
+            edit_book_callback=_edit_current_book,
+        )
+        dialog.exec()
+
+    def save_book_details(self, item, updated_data):
+        book_id = str(item.get("book_id") or "").strip()
+        if not book_id:
+            QMessageBox.warning(self, "Edit Failed", "Missing book ID.")
+            return False
+
+        title = updated_data.get("title") or item.get("title") or f"Book {book_id}"
+        authors = updated_data.get("authors") or ""
+        description = updated_data.get("description") or ""
+        cover_img = updated_data.get("cover_img") or ""
+        rating = int(updated_data.get("rating") or 1)
+        status = (updated_data.get("status") or item.get("status") or "reading").strip().lower()
+        status = "completed" if status == "completed" else "reading"
+
+        conn = connect()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO books (book_id, title, authors, description, genres, cover_img)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    title = VALUES(title),
+                    authors = VALUES(authors),
+                    description = VALUES(description),
+                    cover_img = VALUES(cover_img)
+                """,
+                (
+                    book_id,
+                    title,
+                    authors,
+                    description,
+                    None,
+                    cover_img,
+                ),
+            )
+
+            cursor.execute(
+                "UPDATE bookshelf SET rating = %s, status = %s WHERE user_id = %s AND CAST(book_id AS CHAR) = %s",
+                (rating, status, self.user_id, book_id),
+            )
+
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            QMessageBox.warning(self, "Save Failed", f"Could not save book changes.\n{exc}")
+            conn.close()
+            return False
+        conn.close()
+
+        item.update(
+            {
+                "title": title,
+                "authors": authors,
+                "description": description,
+                "cover_img": cover_img,
+                "rating": rating,
+                "status": status,
+            }
+        )
+        self.books_index[book_id] = title
+        self.refresh_dashboard()
+        QMessageBox.information(self, "Saved", "Book details updated.")
+        return True
+
+    def remove_from_shelf(self, item):
+        book_id = str(item.get("book_id") or "").strip()
+        if not book_id:
+            QMessageBox.warning(self, "Remove Failed", "Missing book ID.")
+            return False
+
+        title = item.get("title") or f"Book {book_id}"
+        confirm = QMessageBox.question(
+            self,
+            "Remove Book",
+            f"Remove '{title}' from your shelf?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return False
+
+        conn = connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM bookshelf WHERE user_id = %s AND CAST(book_id AS CHAR) = %s",
+            (self.user_id, book_id),
+        )
+        conn.commit()
+        removed_count = cursor.rowcount
+        conn.close()
+
+        self.refresh_dashboard()
+
+        if removed_count > 0:
+            QMessageBox.information(self, "Removed", f"Removed '{title}' from your shelf.")
+            return True
+        else:
+            QMessageBox.information(self, "Not Found", "That book is no longer in your shelf.")
+            return False
 
     def _fetch_book_metadata(self, title: str, isbn: str):
         """Return metadata dict using Open Library first, then Google Books fallback."""
@@ -1265,6 +1743,7 @@ class DashboardWindow(QWidget):
                 font-size: 11px;
                 font-weight: 500;
             }
+
         """
 
     def open_recommendations(self):

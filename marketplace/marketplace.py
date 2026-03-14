@@ -41,7 +41,7 @@ def browse_marketplace():
     conn = connect()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT seller_id, book_id, price, COALESCE(location, 'Unknown') FROM marketplace")
+    cursor.execute("SELECT seller_id, book_id, price FROM marketplace")
 
     books = cursor.fetchall()
 
@@ -137,14 +137,6 @@ class MarketplaceWindow(QWidget):
         title.setObjectName("smallHeader")
         layout.addWidget(title)
 
-        loc_label = QLabel("Location")
-        loc_label.setObjectName("fieldLabel")
-        layout.addWidget(loc_label)
-
-        self.location_input = QLineEdit("Gelugor, Penang")
-        self.location_input.textChanged.connect(self.refresh_cards)
-        layout.addWidget(self.location_input)
-
         genre_label = QLabel("Preferred Genres")
         genre_label.setObjectName("fieldLabel")
         layout.addWidget(genre_label)
@@ -225,13 +217,10 @@ class MarketplaceWindow(QWidget):
         b_layout.setSpacing(4)
         b_title = QLabel("Smart Geo-Preference Matches")
         b_title.setObjectName("bannerTitle")
-        b_sub = QLabel("Books that match your taste preferences and are available nearby")
+        b_sub = QLabel("Books that match your taste preferences")
         b_sub.setObjectName("bannerSub")
-        self.location_chip = QLabel("Gelugor, Penang")
-        self.location_chip.setObjectName("chip")
         b_layout.addWidget(b_title)
         b_layout.addWidget(b_sub)
-        b_layout.addWidget(self.location_chip, alignment=Qt.AlignRight)
         container.addWidget(banner)
 
         toolbar = QHBoxLayout()
@@ -317,7 +306,7 @@ class MarketplaceWindow(QWidget):
     def _get_market_items(self):
         rows = browse_marketplace()
         items = []
-        for seller_id, book_id, price, location in rows:
+        for seller_id, book_id, price in rows:
             book_id_text = str(book_id)
             title = self.books_index.get(book_id_text, f"Book {book_id_text}")
             match = 82 + (abs(hash(book_id_text)) % 17)
@@ -331,7 +320,6 @@ class MarketplaceWindow(QWidget):
                     "book_id": book_id_text,
                     "title": title,
                     "price": float(price) if price is not None else 0.0,
-                    "location": location or "Unknown",
                     "match": match,
                     "distance": distance,
                     "condition": condition,
@@ -341,20 +329,15 @@ class MarketplaceWindow(QWidget):
         return items
 
     def refresh_cards(self):
-        self.location_chip.setText(self.location_input.text().strip() or "Unknown")
         items = self._get_market_items()
 
         query = self.search_input.text().strip().lower()
-        location_filter = self.location_input.text().strip().lower()
         max_price = self.max_price.value()
         condition_filter = self.condition_box.currentText().strip().lower()
 
         filtered = []
         for item in items:
             if query and query not in item["title"].lower() and query not in item["book_id"].lower():
-                continue
-
-            if location_filter and location_filter not in item["location"].lower():
                 continue
 
             if item["price"] > max_price:
@@ -427,7 +410,7 @@ class MarketplaceWindow(QWidget):
         title.setContentsMargins(8, 0, 8, 0)
         layout.addWidget(title)
 
-        author = QLabel(f"Seller U{item['seller_id']} • {item['location']}")
+        author = QLabel(f"Seller U{item['seller_id']}")
         author.setObjectName("subtleText")
         author.setContentsMargins(8, 0, 8, 0)
         layout.addWidget(author)
@@ -462,11 +445,9 @@ class MarketplaceWindow(QWidget):
         price_input = QDoubleSpinBox()
         price_input.setRange(0.0, 9999.0)
         price_input.setValue(0.0)
-        location_input = QLineEdit(self.location_input.text().strip() or "Gelugor, Penang")
 
         form.addRow("Book ID:", book_id_input)
         form.addRow("Price (RM, 0=swap):", price_input)
-        form.addRow("Location:", location_input)
 
         dialog.layout().addWidget(form_widget, 1, 0, 1, dialog.layout().columnCount())
         dialog.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
@@ -482,8 +463,8 @@ class MarketplaceWindow(QWidget):
         conn = connect()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO marketplace(seller_id, book_id, price, location) VALUES (%s, %s, %s, %s)",
-            (self.user_id, book_id, float(price_input.value()), location_input.text().strip() or "Unknown"),
+            "INSERT INTO marketplace(seller_id, book_id, price) VALUES (%s, %s, %s)",
+            (self.user_id, book_id, float(price_input.value())),
         )
         conn.commit()
         conn.close()
