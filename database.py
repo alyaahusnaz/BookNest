@@ -19,6 +19,14 @@ def _get_table_columns(cursor, table_name):
     return {row[0] for row in cursor.fetchall()}
 
 
+def _get_column_type(cursor, table_name, column_name):
+    cursor.execute("SHOW COLUMNS FROM " + table_name + " LIKE %s", (column_name,))
+    row = cursor.fetchone()
+    if not row:
+        return ""
+    return str(row[1]).lower()
+
+
 def create_tables():
 
     conn = connect()
@@ -70,6 +78,7 @@ def create_tables():
 
     _ensure_users_columns(cursor)
     _ensure_books_columns(cursor)
+    _ensure_key_column_types(cursor)
 
     conn.commit()
     conn.close()
@@ -91,6 +100,17 @@ def _ensure_books_columns(cursor):
         cursor.execute("ALTER TABLE books ADD COLUMN genres TEXT")
     if "cover_img" not in existing_cols:
         cursor.execute("ALTER TABLE books ADD COLUMN cover_img TEXT")
+
+
+def _ensure_key_column_types(cursor):
+    # Older MySQL schemas were created with INT book_id, which breaks ISBN inserts.
+    books_book_id_type = _get_column_type(cursor, "books", "book_id")
+    if books_book_id_type.startswith("int"):
+        cursor.execute("ALTER TABLE books MODIFY COLUMN book_id VARCHAR(255) NOT NULL")
+
+    shelf_book_id_type = _get_column_type(cursor, "bookshelf", "book_id")
+    if shelf_book_id_type and not shelf_book_id_type.startswith("varchar(255)"):
+        cursor.execute("ALTER TABLE bookshelf MODIFY COLUMN book_id VARCHAR(255)")
 
 
 def _find_books_csv():

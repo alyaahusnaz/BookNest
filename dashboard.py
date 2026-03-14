@@ -1,12 +1,18 @@
 import csv
+import json
 import threading
 import urllib.request
+import urllib.parse
+import zlib
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QObject, Signal
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -15,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -656,7 +663,7 @@ class DashboardWindow(QWidget):
 
         self.add_manual_btn = QPushButton("Add Manually")
         self.add_manual_btn.setObjectName("outlineBtn")
-        self.add_manual_btn.clicked.connect(self.show_not_implemented)
+        self.add_manual_btn.clicked.connect(self.open_add_manual_dialog)
         toolbar.addWidget(self.add_manual_btn)
 
         toolbar.addStretch()
@@ -785,6 +792,7 @@ class DashboardWindow(QWidget):
             FROM bookshelf s
             LEFT JOIN books b ON CAST(b.book_id AS CHAR) = CAST(s.book_id AS CHAR)
             WHERE s.user_id = %s
+            ORDER BY s.id DESC
             """,
             (self.user_id,),
         )
@@ -892,6 +900,244 @@ class DashboardWindow(QWidget):
         layout.addWidget(status_lbl)
 
         return card
+
+    def _fetch_book_metadata(self, title: str, isbn: str):
+        """Return metadata dict using Open Library first, then Google Books fallback."""
+
+        def _read_json(url: str):
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "BookNest/1.0"},
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = response.read().decode("utf-8", errors="ignore")
+            return json.loads(payload)
+
+        def _pick_cover_from_google(volume_info: dict):
+            image_links = volume_info.get("imageLinks") or {}
+            return (
+                image_links.get("thumbnail")
+                or image_links.get("smallThumbnail")
+                or ""
+            ).replace("http://", "https://")
+
+        metadata = {
+            "title": title,
+            "authors": "",
+            "description": "",
+            "cover_img": "",
+            "isbn": isbn,
+        }
+
+        if isbn:
+            try:
+                book_data = _read_json(f"https://openlibrary.org/isbn/{isbn}.json")
+                metadata["title"] = book_data.get("title") or metadata["title"]
+
+                desc = book_data.get("description")
+                if isinstance(desc, dict):
+                    metadata["description"] = str(desc.get("value") or "").strip()
+                elif isinstance(desc, str):
+                    metadata["description"] = desc.strip()
+
+                author_names = []
+                for author in book_data.get("authors", [])[:2]:
+                    key = author.get("key")
+                    if not key:
+                        continue
+                    try:
+                        author_data = _read_json(f"https://openlibrary.org{key}.json")
+                        name = str(author_data.get("name") or "").strip()
+                        if name:
+                            author_names.append(name)
+                    except Exception:
+                        continue
+                metadata["authors"] = ", ".join(author_names)
+
+                covers = book_data.get("covers") or []
+                if covers:
+                    metadata["cover_img"] = f"https://covers.openlibrary.org/b/id/{covers[0]}-L.jpg"
+                else:
+                    metadata["cover_img"] = f"https://covers.openlibrary.org/b/isbn/{isbn}-L.jpg"
+            except Exception:
+                pass
+
+        try:
+            query = urllib.parse.quote(title.strip())
+            search_data = _read_json(f"https://openlibrary.org/search.json?title={query}&limit=1")
+            docs = search_data.get("docs") or []
+            if docs:
+                doc = docs[0]
+                metadata["title"] = str(doc.get("title") or metadata["title"]).strip()
+
+                author_names = doc.get("author_name") or []
+                if author_names:
+                    metadata["authors"] = ", ".join(str(name).strip() for name in author_names[:2] if str(name).strip())
+
+                if not metadata["isbn"]:
+                    isbns = doc.get("isbn") or []
+                    if isbns:
+                        metadata["isbn"] = str(isbns[0]).strip()
+
+                if metadata["isbn"] and not metadata["cover_img"]:
+                    metadata["cover_img"] = f"https://covers.openlibrary.org/b/isbn/{metadata['isbn']}-L.jpg"
+                elif not metadata["cover_img"] and doc.get("cover_i"):
+                    metadata["cover_img"] = f"https://covers.openlibrary.org/b/id/{doc['cover_i']}-L.jpg"
+
+                work_key = str(doc.get("key") or "").strip()
+                if work_key:
+                    try:
+                        work_data = _read_json(f"https://openlibrary.org{work_key}.json")
+                        desc = work_data.get("description")
+                        if isinstance(desc, dict):
+                            metadata["description"] = str(desc.get("value") or "").strip()
+                        elif isinstance(desc, str):
+                            metadata["description"] = desc.strip()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Fallback API: Google Books (helps when Open Library has sparse metadata)
+        if not metadata["authors"] or not metadata["cover_img"] or not metadata["description"]:
+            try:
+                if metadata["isbn"]:
+                    q = urllib.parse.quote(f"isbn:{metadata['isbn']}")
+                else:
+                    q = urllib.parse.quote(f"intitle:{metadata['title']}")
+
+                g_data = _read_json(
+                    f"https://www.googleapis.com/books/v1/volumes?q={q}&maxResults=1"
+                )
+                items = g_data.get("items") or []
+                if items:
+                    volume_info = items[0].get("volumeInfo") or {}
+
+                    if not metadata["title"]:
+                        metadata["title"] = str(volume_info.get("title") or "").strip()
+
+                    if not metadata["authors"]:
+                        g_authors = volume_info.get("authors") or []
+                        metadata["authors"] = ", ".join(
+                            str(name).strip() for name in g_authors[:2] if str(name).strip()
+                        )
+
+                    if not metadata["description"]:
+                        metadata["description"] = str(volume_info.get("description") or "").strip()
+
+                    if not metadata["cover_img"]:
+                        metadata["cover_img"] = _pick_cover_from_google(volume_info)
+            except Exception:
+                pass
+
+        return metadata
+
+    def open_add_manual_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Book Manually")
+        dialog.setMinimumWidth(420)
+
+        form = QFormLayout(dialog)
+
+        title_input = QLineEdit()
+        title_input.setPlaceholderText("Book title")
+        form.addRow("Title", title_input)
+
+        isbn_input = QLineEdit()
+        isbn_input.setPlaceholderText("ISBN (optional)")
+        form.addRow("ISBN", isbn_input)
+
+        author_input = QLineEdit()
+        author_input.setPlaceholderText("Author (optional, used if API misses)")
+        form.addRow("Author", author_input)
+
+        cover_input = QLineEdit()
+        cover_input.setPlaceholderText("Cover URL (optional, used if API misses)")
+        form.addRow("Cover URL", cover_input)
+
+        rating_input = QSpinBox()
+        rating_input.setRange(1, 5)
+        rating_input.setValue(4)
+        form.addRow("Rating", rating_input)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        form.addRow(buttons)
+
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        raw_title = title_input.text().strip()
+        raw_isbn = isbn_input.text().strip()
+        raw_author = author_input.text().strip()
+        raw_cover = cover_input.text().strip()
+        rating = int(rating_input.value())
+
+        if not raw_title:
+            QMessageBox.warning(self, "Validation", "Title is required.")
+            return
+
+        isbn = "".join(ch for ch in raw_isbn if ch.isdigit() or ch.upper() == "X")
+
+        metadata = self._fetch_book_metadata(raw_title, isbn)
+        final_title = (metadata.get("title") or raw_title).strip() or raw_title
+        authors = (metadata.get("authors") or raw_author or "Unknown author").strip()
+        description = (metadata.get("description") or "No description available.").strip()
+        cover_img = (metadata.get("cover_img") or raw_cover or "").strip()
+
+        # Keep manual IDs deterministic and stable across runs.
+        book_id = isbn if isbn else f"manual-{zlib.crc32(final_title.lower().encode('utf-8')):08x}"
+        status = "completed" if rating >= 4 else "reading"
+
+        conn = connect()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "INSERT IGNORE INTO books (book_id, title, authors, description, genres, cover_img) VALUES (%s, %s, %s, %s, %s, %s)",
+            (book_id, final_title, authors, description, None, cover_img),
+        )
+        cursor.execute(
+            """
+            UPDATE books
+            SET
+                title = %s,
+                authors = %s,
+                description = %s,
+                cover_img = %s
+            WHERE book_id = %s
+            """,
+            (final_title, authors, description, cover_img, book_id),
+        )
+
+        cursor.execute(
+            "SELECT 1 FROM bookshelf WHERE user_id = %s AND book_id = %s",
+            (self.user_id, str(book_id)),
+        )
+        exists = cursor.fetchone() is not None
+
+        if exists:
+            conn.commit()
+            conn.close()
+            self.refresh_dashboard()
+            QMessageBox.information(self, "Already Added", "This book is already in your shelf.")
+            return
+
+        cursor.execute(
+            "INSERT INTO bookshelf(user_id, book_id, rating, status) VALUES (%s, %s, %s, %s)",
+            (self.user_id, str(book_id), rating, status),
+        )
+
+        conn.commit()
+        conn.close()
+
+        self.books_index[str(book_id)] = final_title
+        # Make sure the user immediately sees the newly added book in the shelf.
+        self.search_input.clear()
+        self.filter_box.setCurrentText("All Books")
+        self.refresh_dashboard()
+        QMessageBox.information(self, "Added", f"Added '{final_title}' to your shelf.")
 
     def show_not_implemented(self):
         QMessageBox.information(self, "Coming Soon", "This action is not implemented yet.")
