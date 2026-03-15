@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from database import connect
+from database import connect, get_user_profile
+from profile import ClickableAvatarLabel, ProfileDialog, apply_user_avatar
 
 
 def post_book(seller_id, book_id, price):
@@ -55,6 +56,7 @@ class MarketplaceWindow(QWidget):
     def __init__(self, user_id):
         super().__init__()
         self.user_id = user_id
+        self.user_profile = get_user_profile(user_id) or {}
         self.books_index = self._load_books_index()
 
         self.setWindowTitle("BookNest Marketplace")
@@ -108,11 +110,11 @@ class MarketplaceWindow(QWidget):
         bell.setFixedSize(34, 34)
         bar.addWidget(bell)
 
-        avatar = QLabel(f"U{self.user_id}")
-        avatar.setObjectName("avatar")
-        avatar.setAlignment(Qt.AlignCenter)
-        avatar.setFixedSize(36, 36)
-        bar.addWidget(avatar)
+        self.avatar = ClickableAvatarLabel()
+        self.avatar.setObjectName("avatar")
+        self.avatar.clicked.connect(self.open_profile_dialog)
+        apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+        bar.addWidget(self.avatar)
 
         return bar
 
@@ -194,14 +196,6 @@ class MarketplaceWindow(QWidget):
         container.setSpacing(12)
 
         header = QHBoxLayout()
-        heading_block = QVBoxLayout()
-        heading = QLabel("Exchange & Marketplace")
-        heading.setObjectName("mainHeader")
-        subtitle = QLabel("Discover and trade books with readers near you")
-        subtitle.setObjectName("subtleText")
-        heading_block.addWidget(heading)
-        heading_block.addWidget(subtitle)
-        header.addLayout(heading_block)
         header.addStretch()
 
         self.list_btn = QPushButton("+ List a Book")
@@ -215,9 +209,9 @@ class MarketplaceWindow(QWidget):
         b_layout = QVBoxLayout(banner)
         b_layout.setContentsMargins(16, 14, 16, 14)
         b_layout.setSpacing(4)
-        b_title = QLabel("Smart Geo-Preference Matches")
+        b_title = QLabel("Exchange & Marketplace")
         b_title.setObjectName("bannerTitle")
-        b_sub = QLabel("Books that match your taste preferences")
+        b_sub = QLabel("Discover and trade books with readers near you")
         b_sub.setObjectName("bannerSub")
         b_layout.addWidget(b_title)
         b_layout.addWidget(b_sub)
@@ -230,7 +224,7 @@ class MarketplaceWindow(QWidget):
         toolbar.addStretch()
 
         self.sort_box = QComboBox()
-        self.sort_box.addItems(["Sort by Distance", "Sort by Price", "Sort by Match"])
+        self.sort_box.addItems(["Sort by Price", "Sort by Match"])
         self.sort_box.currentTextChanged.connect(self.refresh_cards)
         toolbar.addWidget(self.sort_box)
 
@@ -357,10 +351,8 @@ class MarketplaceWindow(QWidget):
         selected_sort = self.sort_box.currentText()
         if selected_sort == "Sort by Price":
             filtered.sort(key=lambda x: x["price"])
-        elif selected_sort == "Sort by Match":
-            filtered.sort(key=lambda x: x["match"], reverse=True)
         else:
-            filtered.sort(key=lambda x: x["distance"])
+            filtered.sort(key=lambda x: x["match"], reverse=True)
 
         self._render_cards(filtered)
 
@@ -485,6 +477,14 @@ class MarketplaceWindow(QWidget):
         self.recommendations.show()
         self.close()
 
+    def open_profile_dialog(self):
+        dialog = ProfileDialog(self.user_id, self)
+        if dialog.exec() != ProfileDialog.Accepted or not dialog.saved_profile:
+            return
+
+        self.user_profile = dialog.saved_profile
+        apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+
     def _build_stylesheet(self):
         return """
             QWidget {
@@ -526,12 +526,34 @@ class MarketplaceWindow(QWidget):
                 padding: 6px 8px;
             }
 
+            QRadioButton {
+                spacing: 8px;
+                color: #171b27;
+            }
+
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 2px solid #7a839f;
+                background: #f1f3f8;
+            }
+
+            QRadioButton::indicator:checked {
+                border: 2px solid #565f78;
+                background: #727b92;
+            }
+
             QLabel#avatar,
             QLabel#iconChip {
                 background: #dbe4ff;
                 color: #1f3ba2;
                 border-radius: 17px;
                 font-weight: 700;
+            }
+
+            QLabel#avatar {
+                border: 1px solid #d1dbfb;
             }
 
             QFrame#sideCard,
@@ -575,12 +597,14 @@ class MarketplaceWindow(QWidget):
             }
 
             QLabel#bannerTitle {
+                background: transparent;
                 color: #f4f6ff;
                 font-size: 28px;
                 font-weight: 700;
             }
 
             QLabel#bannerSub {
+                background: transparent;
                 color: #dfebff;
                 font-size: 13px;
             }

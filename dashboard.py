@@ -27,7 +27,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from database import connect, seed_user_bookshelf_from_ratings
+from database import connect, get_user_profile, seed_user_bookshelf_from_ratings
+from profile import ClickableAvatarLabel, ProfileDialog, apply_user_avatar
 from recommender.recommender import hybrid_recommend
 
 
@@ -216,6 +217,7 @@ class BookRecommendationApp(QWidget):
         super().__init__()
 
         self.user_id = user_id
+        self.user_profile = get_user_profile(user_id) or {}
         seed_user_bookshelf_from_ratings(self.user_id)
         self.books_index = self._load_books_index()
         self.cover_index = self._load_cover_index()
@@ -255,7 +257,7 @@ class BookRecommendationApp(QWidget):
         self.bookshelf_nav_btn.clicked.connect(self.open_bookshelf)
         top_bar.addWidget(self.bookshelf_nav_btn)
 
-        self.marketplace_nav_btn = QPushButton("Marketplace")
+        self.marketplace_nav_btn = QPushButton("Exchange & Marketplace")
         self.marketplace_nav_btn.setObjectName("navBtn")
         self.marketplace_nav_btn.clicked.connect(self.open_marketplace)
         top_bar.addWidget(self.marketplace_nav_btn)
@@ -272,11 +274,11 @@ class BookRecommendationApp(QWidget):
         self.search_input.textChanged.connect(self.refresh_recommendations)
         top_bar.addWidget(self.search_input)
 
-        avatar = QLabel(f"U{self.user_id}")
-        avatar.setObjectName("avatar")
-        avatar.setAlignment(Qt.AlignCenter)
-        avatar.setFixedSize(36, 36)
-        top_bar.addWidget(avatar)
+        self.avatar = ClickableAvatarLabel()
+        self.avatar.setObjectName("avatar")
+        self.avatar.clicked.connect(self.open_profile_dialog)
+        apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+        top_bar.addWidget(self.avatar)
 
         return top_bar
 
@@ -744,6 +746,14 @@ class BookRecommendationApp(QWidget):
         self.marketplace.show()
         self.close()
 
+    def open_profile_dialog(self):
+        dialog = ProfileDialog(self.user_id, self)
+        if dialog.exec() != ProfileDialog.Accepted or not dialog.saved_profile:
+            return
+
+        self.user_profile = dialog.saved_profile
+        apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+
     def _build_stylesheet(self):
         return """
             QWidget {
@@ -928,6 +938,7 @@ class DashboardWindow(QWidget):
         super().__init__()
 
         self.user_id = user_id
+        self.user_profile = get_user_profile(user_id) or {}
         self.books_index = self._load_books_index()
 
         self.setWindowTitle("BookNest Dashboard")
@@ -977,11 +988,11 @@ class DashboardWindow(QWidget):
         self.search_input.textChanged.connect(self.refresh_dashboard)
         top_bar.addWidget(self.search_input)
 
-        avatar = QLabel(f"U{self.user_id}")
-        avatar.setObjectName("avatar")
-        avatar.setAlignment(Qt.AlignCenter)
-        avatar.setFixedSize(36, 36)
-        top_bar.addWidget(avatar)
+        self.avatar = ClickableAvatarLabel()
+        self.avatar.setObjectName("avatar")
+        self.avatar.clicked.connect(self.open_profile_dialog)
+        apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+        top_bar.addWidget(self.avatar)
 
         return top_bar
 
@@ -1626,6 +1637,14 @@ class DashboardWindow(QWidget):
         self.marketplace = MarketplaceWindow(self.user_id)
         self.marketplace.show()
         self.close()
+
+    def open_profile_dialog(self):
+        dialog = ProfileDialog(self.user_id, self)
+        if dialog.exec() != ProfileDialog.Accepted or not dialog.saved_profile:
+            return
+
+        self.user_profile = dialog.saved_profile
+        apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
 
     def _build_stylesheet(self):
         return """

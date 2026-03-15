@@ -16,7 +16,13 @@ def connect():
 
 def _get_table_columns(cursor, table_name):
     cursor.execute("SHOW COLUMNS FROM " + table_name)
-    return {row[0] for row in cursor.fetchall()}
+    columns = set()
+    for row in cursor.fetchall():
+        if isinstance(row, dict):
+            columns.add(row.get("Field"))
+        else:
+            columns.add(row[0])
+    return {column for column in columns if column}
 
 
 def _get_column_type(cursor, table_name, column_name):
@@ -24,6 +30,8 @@ def _get_column_type(cursor, table_name, column_name):
     row = cursor.fetchone()
     if not row:
         return ""
+    if isinstance(row, dict):
+        return str(row.get("Type", "")).lower()
     return str(row[1]).lower()
 
 
@@ -38,6 +46,7 @@ def create_tables():
         id INT AUTO_INCREMENT PRIMARY KEY,
         username VARCHAR(255) UNIQUE,
         password VARCHAR(255),
+        profile_image TEXT,
         favorite_genre VARCHAR(255),
         favorite_author VARCHAR(255)
     )
@@ -88,10 +97,57 @@ def create_tables():
 
 def _ensure_users_columns(cursor):
     existing_cols = _get_table_columns(cursor, "users")
+    if "profile_image" not in existing_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN profile_image TEXT")
     if "favorite_genre" not in existing_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN favorite_genre TEXT")
     if "favorite_author" not in existing_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN favorite_author TEXT")
+
+
+def get_user_profile(user_id):
+    conn = connect()
+    cursor = conn.cursor(dictionary=True)
+
+    _ensure_users_columns(cursor)
+    conn.commit()
+
+    cursor.execute(
+        "SELECT id, username, password, profile_image FROM users WHERE id = %s",
+        (user_id,),
+    )
+    user = cursor.fetchone()
+
+    conn.close()
+    return user
+
+
+def update_user_profile(user_id, username, password, profile_image):
+    conn = connect()
+    cursor = conn.cursor()
+
+    _ensure_users_columns(cursor)
+    conn.commit()
+
+    cursor.execute(
+        "SELECT id FROM users WHERE username = %s AND id <> %s",
+        (username, user_id),
+    )
+    if cursor.fetchone():
+        conn.close()
+        raise ValueError("Username is already taken.")
+
+    cursor.execute(
+        """
+        UPDATE users
+        SET username = %s, password = %s, profile_image = %s
+        WHERE id = %s
+        """,
+        (username, password, profile_image or None, user_id),
+    )
+
+    conn.commit()
+    conn.close()
 
 
 def _ensure_books_columns(cursor):
