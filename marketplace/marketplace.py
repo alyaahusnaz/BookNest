@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from database import connect, get_user_profile
 from profile import ClickableAvatarLabel, ProfileDialog, apply_user_avatar
+from window_state import show_with_parent_window_state
 
 
 def post_book(seller_id, book_id, price):
@@ -103,6 +104,11 @@ class MarketplaceWindow(QWidget):
         self.search_input.setFixedWidth(240)
         self.search_input.textChanged.connect(self.refresh_cards)
         bar.addWidget(self.search_input)
+
+        self.logout_btn = QPushButton("Logout")
+        self.logout_btn.setObjectName("navBtn")
+        self.logout_btn.clicked.connect(self.logout)
+        bar.addWidget(self.logout_btn)
 
         bell = QLabel("🔔")
         bell.setObjectName("iconChip")
@@ -467,14 +473,14 @@ class MarketplaceWindow(QWidget):
         from dashboard import DashboardWindow
 
         self.dashboard = DashboardWindow(self.user_id)
-        self.dashboard.show()
+        show_with_parent_window_state(self, self.dashboard)
         self.close()
 
     def open_recommendations(self):
         from dashboard import BookRecommendationApp
 
         self.recommendations = BookRecommendationApp(self.user_id)
-        self.recommendations.show()
+        show_with_parent_window_state(self, self.recommendations)
         self.close()
 
     def open_profile_dialog(self):
@@ -484,6 +490,13 @@ class MarketplaceWindow(QWidget):
 
         self.user_profile = dialog.saved_profile
         apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+
+    def logout(self):
+        from auth.login import LoginWindow
+
+        self.login = LoginWindow()
+        show_with_parent_window_state(self, self.login)
+        self.close()
 
     def _build_stylesheet(self):
         return """

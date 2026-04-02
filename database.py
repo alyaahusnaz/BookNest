@@ -103,6 +103,22 @@ def _ensure_users_columns(cursor):
         cursor.execute("ALTER TABLE users ADD COLUMN favorite_genre TEXT")
     if "favorite_author" not in existing_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN favorite_author TEXT")
+    if "shelf_initialized" not in existing_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN shelf_initialized TINYINT(1) NOT NULL DEFAULT 0")
+
+    # Existing users with shelf rows should be treated as already initialized.
+    cursor.execute(
+        """
+        UPDATE users u
+        SET u.shelf_initialized = 1
+        WHERE u.shelf_initialized = 0
+          AND EXISTS (
+              SELECT 1
+              FROM bookshelf s
+              WHERE s.user_id = u.id
+          )
+        """
+    )
 
 
 def get_user_profile(user_id):
@@ -246,9 +262,23 @@ def seed_user_bookshelf_from_ratings(user_id):
     conn = connect()
     cursor = conn.cursor()
 
+    _ensure_users_columns(cursor)
+    conn.commit()
+
+    cursor.execute("SELECT shelf_initialized FROM users WHERE id = %s", (user_id,))
+    seeded_row = cursor.fetchone()
+    if seeded_row and int(seeded_row[0] or 0) == 1:
+        conn.close()
+        return
+
     cursor.execute("SELECT COUNT(*) FROM bookshelf WHERE user_id = %s", (user_id,))
     existing_count = cursor.fetchone()[0]
     if existing_count > 0:
+        cursor.execute(
+            "UPDATE users SET shelf_initialized = 1 WHERE id = %s",
+            (user_id,),
+        )
+        conn.commit()
         conn.close()
         return
 
@@ -274,6 +304,11 @@ def seed_user_bookshelf_from_ratings(user_id):
             "INSERT INTO bookshelf(user_id, book_id, rating, status) VALUES (%s, %s, %s, %s)",
             rows_to_insert,
         )
-        conn.commit()
+
+    cursor.execute(
+        "UPDATE users SET shelf_initialized = 1 WHERE id = %s",
+        (user_id,),
+    )
+    conn.commit()
 
     conn.close()

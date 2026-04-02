@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from database import connect, get_user_profile, seed_user_bookshelf_from_ratings
 from profile import ClickableAvatarLabel, ProfileDialog, apply_user_avatar
 from recommender.recommender import hybrid_recommend
+from window_state import show_with_parent_window_state
 
 
 class CoverLabel(QLabel):
@@ -273,6 +274,11 @@ class BookRecommendationApp(QWidget):
         self.search_input.setFixedWidth(240)
         self.search_input.textChanged.connect(self.refresh_recommendations)
         top_bar.addWidget(self.search_input)
+
+        self.logout_btn = QPushButton("Logout")
+        self.logout_btn.setObjectName("navBtn")
+        self.logout_btn.clicked.connect(self.logout)
+        top_bar.addWidget(self.logout_btn)
 
         self.avatar = ClickableAvatarLabel()
         self.avatar.setObjectName("avatar")
@@ -736,14 +742,14 @@ class BookRecommendationApp(QWidget):
 
     def open_bookshelf(self):
         self.dashboard = DashboardWindow(self.user_id)
-        self.dashboard.show()
+        show_with_parent_window_state(self, self.dashboard)
         self.close()
 
     def open_marketplace(self):
         from marketplace.marketplace import MarketplaceWindow
 
         self.marketplace = MarketplaceWindow(self.user_id)
-        self.marketplace.show()
+        show_with_parent_window_state(self, self.marketplace)
         self.close()
 
     def open_profile_dialog(self):
@@ -753,6 +759,13 @@ class BookRecommendationApp(QWidget):
 
         self.user_profile = dialog.saved_profile
         apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+
+    def logout(self):
+        from auth.login import LoginWindow
+
+        self.login = LoginWindow()
+        show_with_parent_window_state(self, self.login)
+        self.close()
 
     def _build_stylesheet(self):
         return """
@@ -988,6 +1001,11 @@ class DashboardWindow(QWidget):
         self.search_input.textChanged.connect(self.refresh_dashboard)
         top_bar.addWidget(self.search_input)
 
+        self.logout_btn = QPushButton("Logout")
+        self.logout_btn.setObjectName("navBtn")
+        self.logout_btn.clicked.connect(self.logout)
+        top_bar.addWidget(self.logout_btn)
+
         self.avatar = ClickableAvatarLabel()
         self.avatar.setObjectName("avatar")
         self.avatar.clicked.connect(self.open_profile_dialog)
@@ -1138,6 +1156,7 @@ class DashboardWindow(QWidget):
         cursor.execute(
             """
             SELECT
+                s.id,
                 s.book_id,
                 s.rating,
                 COALESCE(s.status, 'reading'),
@@ -1156,9 +1175,10 @@ class DashboardWindow(QWidget):
         conn.close()
 
         books = []
-        for book_id, rating, status, title, authors, description, cover_img in rows:
+        for shelf_id, book_id, rating, status, title, authors, description, cover_img in rows:
             books.append(
                 {
+                    "shelf_id": int(shelf_id),
                     "book_id": str(book_id),
                     "rating": rating if rating is not None else 0,
                     "status": (status or "reading").strip().lower(),
@@ -1355,8 +1375,9 @@ class DashboardWindow(QWidget):
         return True
 
     def remove_from_shelf(self, item):
+        shelf_id = item.get("shelf_id")
         book_id = str(item.get("book_id") or "").strip()
-        if not book_id:
+        if shelf_id is None and not book_id:
             QMessageBox.warning(self, "Remove Failed", "Missing book ID.")
             return False
 
@@ -1373,10 +1394,16 @@ class DashboardWindow(QWidget):
 
         conn = connect()
         cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM bookshelf WHERE user_id = %s AND CAST(book_id AS CHAR) = %s",
-            (self.user_id, book_id),
-        )
+        if shelf_id is not None:
+            cursor.execute(
+                "DELETE FROM bookshelf WHERE id = %s AND user_id = %s",
+                (int(shelf_id), self.user_id),
+            )
+        else:
+            cursor.execute(
+                "DELETE FROM bookshelf WHERE user_id = %s AND CAST(book_id AS CHAR) = %s LIMIT 1",
+                (self.user_id, book_id),
+            )
         conn.commit()
         removed_count = cursor.rowcount
         conn.close()
@@ -1451,41 +1478,42 @@ class DashboardWindow(QWidget):
             except Exception:
                 pass
 
-        try:
-            query = urllib.parse.quote(title.strip())
-            search_data = _read_json(f"https://openlibrary.org/search.json?title={query}&limit=1")
-            docs = search_data.get("docs") or []
-            if docs:
-                doc = docs[0]
-                metadata["title"] = str(doc.get("title") or metadata["title"]).strip()
+        if title.strip():
+            try:
+                query = urllib.parse.quote(title.strip())
+                search_data = _read_json(f"https://openlibrary.org/search.json?title={query}&limit=1")
+                docs = search_data.get("docs") or []
+                if docs:
+                    doc = docs[0]
+                    metadata["title"] = str(doc.get("title") or metadata["title"]).strip()
 
-                author_names = doc.get("author_name") or []
-                if author_names:
-                    metadata["authors"] = ", ".join(str(name).strip() for name in author_names[:2] if str(name).strip())
+                    author_names = doc.get("author_name") or []
+                    if author_names:
+                        metadata["authors"] = ", ".join(str(name).strip() for name in author_names[:2] if str(name).strip())
 
-                if not metadata["isbn"]:
-                    isbns = doc.get("isbn") or []
-                    if isbns:
-                        metadata["isbn"] = str(isbns[0]).strip()
+                    if not metadata["isbn"]:
+                        isbns = doc.get("isbn") or []
+                        if isbns:
+                            metadata["isbn"] = str(isbns[0]).strip()
 
-                if metadata["isbn"] and not metadata["cover_img"]:
-                    metadata["cover_img"] = f"https://covers.openlibrary.org/b/isbn/{metadata['isbn']}-L.jpg"
-                elif not metadata["cover_img"] and doc.get("cover_i"):
-                    metadata["cover_img"] = f"https://covers.openlibrary.org/b/id/{doc['cover_i']}-L.jpg"
+                    if metadata["isbn"] and not metadata["cover_img"]:
+                        metadata["cover_img"] = f"https://covers.openlibrary.org/b/isbn/{metadata['isbn']}-L.jpg"
+                    elif not metadata["cover_img"] and doc.get("cover_i"):
+                        metadata["cover_img"] = f"https://covers.openlibrary.org/b/id/{doc['cover_i']}-L.jpg"
 
-                work_key = str(doc.get("key") or "").strip()
-                if work_key:
-                    try:
-                        work_data = _read_json(f"https://openlibrary.org{work_key}.json")
-                        desc = work_data.get("description")
-                        if isinstance(desc, dict):
-                            metadata["description"] = str(desc.get("value") or "").strip()
-                        elif isinstance(desc, str):
-                            metadata["description"] = desc.strip()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    work_key = str(doc.get("key") or "").strip()
+                    if work_key:
+                        try:
+                            work_data = _read_json(f"https://openlibrary.org{work_key}.json")
+                            desc = work_data.get("description")
+                            if isinstance(desc, dict):
+                                metadata["description"] = str(desc.get("value") or "").strip()
+                            elif isinstance(desc, str):
+                                metadata["description"] = desc.strip()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         # Fallback API: Google Books (helps when Open Library has sparse metadata)
         if not metadata["authors"] or not metadata["cover_img"] or not metadata["description"]:
@@ -1529,7 +1557,7 @@ class DashboardWindow(QWidget):
         form = QFormLayout(dialog)
 
         title_input = QLineEdit()
-        title_input.setPlaceholderText("Book title")
+        title_input.setPlaceholderText("Book title (optional if ISBN is provided)")
         form.addRow("Title", title_input)
 
         isbn_input = QLineEdit()
@@ -1564,14 +1592,21 @@ class DashboardWindow(QWidget):
         raw_cover = cover_input.text().strip()
         rating = int(rating_input.value())
 
-        if not raw_title:
-            QMessageBox.warning(self, "Validation", "Title is required.")
+        if not raw_title and not isbn:
+            QMessageBox.warning(self, "Validation", "Enter a title or an ISBN.")
             return
 
         isbn = "".join(ch for ch in raw_isbn if ch.isdigit() or ch.upper() == "X")
 
         metadata = self._fetch_book_metadata(raw_title, isbn)
         final_title = (metadata.get("title") or raw_title).strip() or raw_title
+        if not final_title:
+            QMessageBox.warning(
+                self,
+                "Book Not Found",
+                "Could not retrieve book metadata from ISBN. Please provide a title manually.",
+            )
+            return
         authors = (metadata.get("authors") or raw_author or "Unknown author").strip()
         description = (metadata.get("description") or "No description available.").strip()
         cover_img = (metadata.get("cover_img") or raw_cover or "").strip()
@@ -1635,7 +1670,7 @@ class DashboardWindow(QWidget):
         from marketplace.marketplace import MarketplaceWindow
 
         self.marketplace = MarketplaceWindow(self.user_id)
-        self.marketplace.show()
+        show_with_parent_window_state(self, self.marketplace)
         self.close()
 
     def open_profile_dialog(self):
@@ -1645,6 +1680,13 @@ class DashboardWindow(QWidget):
 
         self.user_profile = dialog.saved_profile
         apply_user_avatar(self.avatar, self.user_profile, self.user_id, size=36)
+
+    def logout(self):
+        from auth.login import LoginWindow
+
+        self.login = LoginWindow()
+        show_with_parent_window_state(self, self.login)
+        self.close()
 
     def _build_stylesheet(self):
         return """
@@ -1768,5 +1810,5 @@ class DashboardWindow(QWidget):
     def open_recommendations(self):
 
         self.rec = BookRecommendationApp(self.user_id)
-        self.rec.show()
+        show_with_parent_window_state(self, self.rec)
         self.close()

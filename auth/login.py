@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from database import connect
 from dashboard import DashboardWindow
+from window_state import show_with_parent_window_state
 
 
 def login_user(username: str, password: str):
@@ -40,6 +41,7 @@ class LoginWindow(QWidget):
         super().__init__()
 
         self.setWindowTitle("BookNest Login")
+        self.resize(980, 700)
 
         layout = QVBoxLayout()
 
@@ -73,7 +75,7 @@ class LoginWindow(QWidget):
         if user:
             user_id = user[0]
             self.dashboard = DashboardWindow(user_id)
-            self.dashboard.show()
+            show_with_parent_window_state(self, self.dashboard)
             self.close()
         else:
             QMessageBox.warning(self, "Login Failed", "Invalid username or password")
@@ -82,7 +84,7 @@ class LoginWindow(QWidget):
         from auth.register import RegisterWindow
 
         self.register = RegisterWindow()
-        self.register.show()
+        show_with_parent_window_state(self, self.register)
         self.close()
 
 

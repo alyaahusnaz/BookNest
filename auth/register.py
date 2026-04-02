@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from database import connect
+from window_state import show_with_parent_window_state
 
 
 def register_user(username, password, favorite_genre, favorite_author):
@@ -64,6 +65,7 @@ class RegisterWindow(QWidget):
         super().__init__()
 
         self.setWindowTitle("BookNest Register")
+        self.resize(980, 700)
 
         layout = QVBoxLayout()
 
@@ -131,5 +133,5 @@ class RegisterWindow(QWidget):
         from auth.login import LoginWindow
 
         self.login = LoginWindow()
-        self.login.show()
+        show_with_parent_window_state(self, self.login)
         self.close()
