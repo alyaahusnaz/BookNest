@@ -262,7 +262,6 @@ class BookRecommendationApp(QWidget):
             normalized_title = self._normalize_title(title)
             if normalized_title:
                 self.normalized_title_to_book_id.setdefault(normalized_title, str(book_id))
-        self.recommendation_limit = 20
 
         self.setWindowTitle("BookNest Recommendations")
         self.resize(980, 700)
@@ -403,11 +402,6 @@ class BookRecommendationApp(QWidget):
         self.scroll.setWidget(self.grid_host)
         layout.addWidget(self.scroll, 1)
 
-        load_more = QPushButton("Load More Recommendations")
-        load_more.setObjectName("mutedBtn")
-        load_more.clicked.connect(self.load_more_recommendations)
-        layout.addWidget(load_more, alignment=Qt.AlignHCenter)
-
         return wrapper
 
     def _load_cover_index(self):
@@ -514,7 +508,7 @@ class BookRecommendationApp(QWidget):
 
     def _get_recommendation_items(self, top_n=None):
         if top_n is None:
-            top_n = self.recommendation_limit
+            top_n = max(len(self.title_to_book_id), 1)
 
         try:
             titles = hybrid_recommend(self.user_id, top_n=top_n)
@@ -603,10 +597,6 @@ class BookRecommendationApp(QWidget):
             items.sort(key=lambda x: x["rating"], reverse=True)
 
         self._render_cards(items)
-
-    def load_more_recommendations(self):
-        self.recommendation_limit += 20
-        self.refresh_recommendations()
 
     def _render_cards(self, items):
         while self.grid.count():
