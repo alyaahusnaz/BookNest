@@ -28,9 +28,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from database import connect, get_user_profile, seed_user_bookshelf_from_ratings
+from database import connect, get_user_profile
 from profile import ClickableAvatarLabel, ProfileDialog, apply_user_avatar
-from recommender.recommender import hybrid_recommend
+from recommender.recommender import (
+    hybrid_recommend,
+    hybrid_recommend_score_map,
+    get_book_metadata_for_title,
+)
 from window_state import show_with_parent_window_state
 
 
@@ -72,19 +76,37 @@ class BookDetailDialog(QDialog):
 
     @staticmethod
     def _status_to_display(status_value):
-        return "Completed" if (status_value or "").strip().lower() == "completed" else "Currently Reading"
+        normalized = (status_value or "").strip().lower()
+        if normalized == "completed":
+            return "Completed"
+        if normalized == "wishlist":
+            return "Wishlist"
+        return "Currently Reading"
 
     @staticmethod
     def _display_to_status(display_value):
-        return "completed" if (display_value or "").strip().lower() == "completed" else "reading"
+        normalized = (display_value or "").strip().lower()
+        if normalized == "completed":
+            return "completed"
+        if normalized == "wishlist":
+            return "wishlist"
+        return "reading"
 
-    def __init__(self, book: dict, parent=None, remove_callback=None, edit_book_callback=None):
+    def __init__(
+        self,
+        book: dict,
+        parent=None,
+        remove_callback=None,
+        edit_book_callback=None,
+        show_status=True,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Book Details")
         self.setMinimumSize(680, 420)
         self._remove_callback = remove_callback
         self._edit_book_callback = edit_book_callback
         self._book = dict(book)
+        self._show_status = bool(show_status)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -117,9 +139,11 @@ class BookDetailDialog(QDialog):
         self.rating_lbl.setStyleSheet("font-size: 13px; color: #1b2133; font-weight: 600;")
         info_col.addWidget(self.rating_lbl)
 
-        self.status_lbl = QLabel(f"Status: {self._status_to_display(book.get('status'))}")
-        self.status_lbl.setStyleSheet("font-size: 13px; color: #1b2133; font-weight: 600;")
-        info_col.addWidget(self.status_lbl)
+        self.status_lbl = None
+        if self._show_status:
+            self.status_lbl = QLabel(f"Status: {self._status_to_display(book.get('status'))}")
+            self.status_lbl.setStyleSheet("font-size: 13px; color: #1b2133; font-weight: 600;")
+            info_col.addWidget(self.status_lbl)
 
         description_title = QLabel("Description")
         description_title.setStyleSheet("font-size: 13px; color: #4b5474; font-weight: 700;")
@@ -180,10 +204,12 @@ class BookDetailDialog(QDialog):
         rating_input.setValue(max(1, min(5, int(round(float(self._book.get("rating") or 1))))))
         form.addRow("Rating", rating_input)
 
-        status_input = QComboBox()
-        status_input.addItems(["Currently Reading", "Completed"])
-        status_input.setCurrentText(self._status_to_display(self._book.get("status")))
-        form.addRow("Status", status_input)
+        status_input = None
+        if self._show_status:
+            status_input = QComboBox()
+            status_input.addItems(["Currently Reading", "Completed", "Wishlist"])
+            status_input.setCurrentText(self._status_to_display(self._book.get("status")))
+            form.addRow("Status", status_input)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(edit_dialog.accept)
@@ -199,8 +225,9 @@ class BookDetailDialog(QDialog):
             "cover_img": cover_input.text().strip(),
             "description": description_input.toPlainText().strip(),
             "rating": int(rating_input.value()),
-            "status": self._display_to_status(status_input.currentText()),
         }
+        if status_input is not None:
+            updated["status"] = self._display_to_status(status_input.currentText())
 
         saved = self._edit_book_callback(updated)
         if saved:
@@ -209,24 +236,32 @@ class BookDetailDialog(QDialog):
             self.author_lbl.setText(f"Author: {updated['authors'] or 'Unknown author'}")
             stars = "★" * max(0, min(5, int(round(float(updated.get("rating") or 0)))))
             self.rating_lbl.setText(f"Rating: {float(updated.get('rating') or 0):.1f}  {stars}")
-            self.status_lbl.setText(f"Status: {self._status_to_display(updated.get('status'))}")
+            if self.status_lbl is not None:
+                self.status_lbl.setText(f"Status: {self._status_to_display(updated.get('status'))}")
             self.description_lbl.setText(updated["description"] or "No description available.")
 
 
 class BookRecommendationApp(QWidget):
+
+    @staticmethod
+    def _normalize_title(value):
+        return " ".join(str(value or "").strip().lower().split())
 
     def __init__(self, user_id):
         super().__init__()
 
         self.user_id = user_id
         self.user_profile = get_user_profile(user_id) or {}
-        seed_user_bookshelf_from_ratings(self.user_id)
         self.books_index = self._load_books_index()
         self.cover_index = self._load_cover_index()
         self.book_metadata_index = self._load_book_metadata_index()
         self.title_to_book_id = {}
+        self.normalized_title_to_book_id = {}
         for book_id, title in self.books_index.items():
-            self.title_to_book_id.setdefault(title, book_id)
+            self.title_to_book_id.setdefault(title, str(book_id))
+            normalized_title = self._normalize_title(title)
+            if normalized_title:
+                self.normalized_title_to_book_id.setdefault(normalized_title, str(book_id))
         self.recommendation_limit = 20
 
         self.setWindowTitle("BookNest Recommendations")
@@ -487,25 +522,68 @@ class BookRecommendationApp(QWidget):
             QMessageBox.warning(self, "Recommendation Error", str(exc))
             return []
 
+        try:
+            score_map = hybrid_recommend_score_map(self.user_id, exclude_read=True)
+        except Exception:
+            score_map = {}
+
         items = []
+        raw_scores = []
         for title in titles:
             meta = self._mock_metadata(title)
             book_id = self.title_to_book_id.get(title, "")
-            book_meta = self.book_metadata_index.get(book_id, {})
-            real_genre = self._primary_genre(book_meta.get("genres", ""))
+            if not book_id:
+                book_id = self.normalized_title_to_book_id.get(self._normalize_title(title), "")
+
+            model_meta = get_book_metadata_for_title(title)
+            if not book_id:
+                book_id = str(model_meta.get("book_id") or "").strip()
+
+            book_meta = self.book_metadata_index.get(book_id, {}) if book_id else {}
+
+            merged_authors = (book_meta.get("authors") or "").strip() or (model_meta.get("authors") or "").strip()
+            merged_description = (book_meta.get("description") or "").strip() or (model_meta.get("description") or "").strip()
+            merged_genres = (book_meta.get("genres") or "").strip() or (model_meta.get("genres") or "").strip()
+            merged_cover = self.cover_index.get(book_id, "") if book_id else ""
+            if not merged_cover:
+                merged_cover = (model_meta.get("cover_img") or "").strip()
+
+            raw_score = float(score_map.get(str(book_id), 0.0)) if book_id else 0.0
+            raw_scores.append(raw_score)
+
+            real_genre = self._primary_genre(merged_genres)
             items.append(
                 {
                     "title": title,
                     "book_id": book_id,
                     "rating": meta["rating"],
                     "votes": meta["votes"],
-                    "match": meta["match"],
+                    "match": 0,
                     "genre": real_genre,
-                    "cover_img": self.cover_index.get(book_id, ""),
-                    "authors": book_meta.get("authors") or "Unknown author",
-                    "description": book_meta.get("description") or "No description available.",
+                    "cover_img": merged_cover,
+                    "authors": merged_authors or "Unknown author",
+                    "description": merged_description or "No description available.",
+                    "_raw_match_score": raw_score,
+                    "_fallback_match": meta["match"],
                 }
             )
+
+        if items:
+            min_score = min(raw_scores)
+            max_score = max(raw_scores)
+            has_signal = max_score > 0
+
+            for item in items:
+                if has_signal and max_score > min_score:
+                    normalized = (item["_raw_match_score"] - min_score) / (max_score - min_score)
+                    item["match"] = max(70, min(99, int(round(70 + (normalized * 29)))))
+                elif has_signal:
+                    item["match"] = 90
+                else:
+                    item["match"] = int(item["_fallback_match"])
+
+                item.pop("_raw_match_score", None)
+                item.pop("_fallback_match", None)
 
         return items
 
@@ -599,10 +677,13 @@ class BookRecommendationApp(QWidget):
 
         layout.addStretch()
 
-        button = QPushButton("Add to Library")
+        saved_to_library = self._book_exists_in_shelf(item.get("book_id"))
+        button = QPushButton("Added to Library" if saved_to_library else "Add to Library")
         button.setObjectName("primaryBtn")
         button.setContentsMargins(10, 0, 10, 0)
-        button.clicked.connect(lambda _, rec=item: self.add_to_library(rec))
+        button.setEnabled(not saved_to_library)
+        if not saved_to_library:
+            button.clicked.connect(lambda _, rec=item, btn=button: self.add_to_library(rec, btn))
         layout.addWidget(button)
 
         def _open_details(_event=None):
@@ -657,15 +738,11 @@ class BookRecommendationApp(QWidget):
             "description": "",
             "cover_img": item.get("cover_img", ""),
             "rating": item.get("rating", 0),
-            "status": "reading",
         }
         if db_detail:
             payload.update(db_detail)
 
-        def _edit_book(updated_data):
-            return self._save_book_details(item, payload, updated_data)
-
-        dialog = BookDetailDialog(payload, self, edit_book_callback=_edit_book)
+        dialog = BookDetailDialog(payload, self, show_status=False)
         dialog.exec()
 
     def _save_book_details(self, item, payload, updated_data):
@@ -680,7 +757,7 @@ class BookRecommendationApp(QWidget):
         cover_img = updated_data.get("cover_img") or ""
         rating = int(updated_data.get("rating") or 1)
         status = (updated_data.get("status") or payload.get("status") or "reading").strip().lower()
-        status = "completed" if status == "completed" else "reading"
+        status = status if status in {"reading", "completed", "wishlist"} else "reading"
 
         conn = connect()
         cursor = conn.cursor()
@@ -738,7 +815,21 @@ class BookRecommendationApp(QWidget):
         QMessageBox.information(self, "Saved", "Book details updated.")
         return True
 
-    def add_to_library(self, recommendation):
+    def _book_exists_in_shelf(self, book_id):
+        if not book_id:
+            return False
+
+        conn = connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM bookshelf WHERE user_id = %s AND book_id = %s",
+            (self.user_id, str(book_id)),
+        )
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+
+    def add_to_library(self, recommendation, button=None):
         book_id = recommendation.get("book_id")
         if not book_id:
             QMessageBox.warning(
@@ -751,25 +842,57 @@ class BookRecommendationApp(QWidget):
         conn = connect()
         cursor = conn.cursor()
 
-        cursor.execute(
-            "SELECT 1 FROM bookshelf WHERE user_id = %s AND book_id = %s",
-            (self.user_id, str(book_id)),
-        )
-        exists = cursor.fetchone() is not None
-
-        if exists:
+        if self._book_exists_in_shelf(book_id):
             conn.close()
             QMessageBox.information(self, "Already Added", "This book is already in your library.")
+            if button is not None:
+                button.setText("Added to Library")
+                button.setEnabled(False)
             return
+
+        title = (recommendation.get("title") or self.books_index.get(str(book_id), f"Book {book_id}")).strip()
+        authors = (recommendation.get("authors") or "").strip()
+        description = (recommendation.get("description") or "").strip()
+        cover_img = (recommendation.get("cover_img") or "").strip()
+        genres = (recommendation.get("genres") or recommendation.get("genre") or "").strip()
+
+        cursor.execute(
+            """
+            INSERT INTO books (book_id, title, authors, description, genres, cover_img)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                title = VALUES(title),
+                authors = COALESCE(NULLIF(books.authors, ''), VALUES(authors)),
+                description = COALESCE(NULLIF(books.description, ''), VALUES(description)),
+                genres = COALESCE(NULLIF(books.genres, ''), VALUES(genres)),
+                cover_img = COALESCE(NULLIF(books.cover_img, ''), VALUES(cover_img))
+            """,
+            (str(book_id), title, authors, description, genres, cover_img),
+        )
 
         cursor.execute(
             "INSERT INTO bookshelf(user_id, book_id, rating, status) VALUES (%s, %s, %s, %s)",
-            (self.user_id, str(book_id), 5, "reading"),
+            (self.user_id, str(book_id), 0, "wishlist"),
         )
         conn.commit()
         conn.close()
 
-        QMessageBox.information(self, "Added", "Book added to your library.")
+        self.books_index[str(book_id)] = title
+        if cover_img:
+            self.cover_index[str(book_id)] = cover_img
+        self.book_metadata_index[str(book_id)] = {
+            "authors": authors,
+            "description": description,
+            "genres": genres,
+        }
+        self.title_to_book_id[title] = str(book_id)
+
+        if button is not None:
+            button.setText("Added to Library")
+            button.setEnabled(False)
+
+        QMessageBox.information(self, "Added", "Book added to your wishlist.")
+        return True
 
     def open_bookshelf(self):
         self.dashboard = DashboardWindow(self.user_id)
@@ -1084,10 +1207,12 @@ class DashboardWindow(QWidget):
         self.stat_total = self._build_stat_card("Total Books", "0")
         self.stat_reading = self._build_stat_card("Currently Reading", "0")
         self.stat_completed = self._build_stat_card("Completed", "0")
+        self.stat_wishlist = self._build_stat_card("Wishlist", "0")
 
         self.stats_grid.addWidget(self.stat_total, 0, 0)
         self.stats_grid.addWidget(self.stat_reading, 0, 1)
         self.stats_grid.addWidget(self.stat_completed, 0, 2)
+        self.stats_grid.addWidget(self.stat_wishlist, 0, 3)
 
         layout.addLayout(self.stats_grid)
         return card
@@ -1227,7 +1352,10 @@ class DashboardWindow(QWidget):
         for item in books:
             title = item["title"] or self.books_index.get(item["book_id"], f"Book {item['book_id']}")
 
-            if status_filter != "all books" and item["status"] != status_filter:
+            if status_filter == "all books":
+                if item["status"] not in {"reading", "completed"}:
+                    continue
+            elif item["status"] != status_filter:
                 continue
 
             if query and query not in title.lower() and query not in item["book_id"].lower():
@@ -1241,13 +1369,15 @@ class DashboardWindow(QWidget):
         self._render_shelf_books(filtered)
 
     def _update_stats(self, books):
-        total = len(books)
+        total = sum(1 for item in books if item["status"] in {"reading", "completed"})
         reading = sum(1 for item in books if item["status"] == "reading")
         completed = sum(1 for item in books if item["status"] == "completed")
+        wishlist = sum(1 for item in books if item["status"] == "wishlist")
 
         self.stat_total.stat_value_label.setText(str(total))
         self.stat_reading.stat_value_label.setText(str(reading))
         self.stat_completed.stat_value_label.setText(str(completed))
+        self.stat_wishlist.stat_value_label.setText(str(wishlist))
 
     def _render_shelf_books(self, books):
         while self.shelf_layout.count():
@@ -1347,7 +1477,7 @@ class DashboardWindow(QWidget):
         cover_img = updated_data.get("cover_img") or ""
         rating = int(updated_data.get("rating") or 1)
         status = (updated_data.get("status") or item.get("status") or "reading").strip().lower()
-        status = "completed" if status == "completed" else "reading"
+        status = status if status in {"reading", "completed", "wishlist"} else "reading"
 
         conn = connect()
         cursor = conn.cursor()

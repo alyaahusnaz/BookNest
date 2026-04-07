@@ -437,8 +437,7 @@ class MarketplaceWindow(QWidget):
 
     def _get_market_items(self):
         rows = browse_marketplace()
-        if not self._hybrid_match_map:
-            self._hybrid_match_map = hybrid_recommend_score_map(self.user_id, exclude_read=True)
+        self._hybrid_match_map = hybrid_recommend_score_map(self.user_id, exclude_read=False)
 
         max_score = max(self._hybrid_match_map.values()) if self._hybrid_match_map else 0.0
 
@@ -450,7 +449,7 @@ class MarketplaceWindow(QWidget):
             raw_score = self._hybrid_match_map.get(book_id_text, 0.0)
             if max_score > 0:
                 match = int(round((raw_score / max_score) * 100))
-                match = max(1, min(100, match))
+                match = max(0, min(100, match))
             else:
                 match = 0
             distance = 1.0 + (abs(hash(book_id_text + "d")) % 30) / 10

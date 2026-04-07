@@ -28,6 +28,36 @@ user_book_matrix = ratings.pivot_table(
 user_similarity = cosine_similarity(user_book_matrix)
 
 
+def _normalize_title(value):
+    return " ".join(str(value or "").strip().lower().split())
+
+
+_book_metadata_by_normalized_title = {}
+for _, _row in books.iterrows():
+    _title = _row.get("title", "")
+    _normalized = _normalize_title(_title)
+    if not _normalized or _normalized in _book_metadata_by_normalized_title:
+        continue
+
+    _author = _row.get("author")
+    if _author is None or str(_author).strip() == "":
+        _author = _row.get("authors", "")
+
+    _book_metadata_by_normalized_title[_normalized] = {
+        "book_id": str(_row.get("book_id") or "").strip(),
+        "title": str(_title or "").strip(),
+        "authors": str(_author or "").strip(),
+        "description": str(_row.get("description") or "").strip(),
+        "genres": str(_row.get("genres") or "").strip(),
+        "cover_img": str(_row.get("cover_img") or _row.get("coverImg") or "").strip(),
+    }
+
+
+def get_book_metadata_for_title(title):
+    """Return best-effort metadata from trained catalog for a given title."""
+    return _book_metadata_by_normalized_title.get(_normalize_title(title), {})
+
+
 def _get_user_books_from_db(user_id):
     """
     Return a dict of {book_id (int): rating (int)} from the live SQLite bookshelf.
@@ -103,6 +133,28 @@ def _book_author_text(book_row):
     return str(author).lower()
 
 
+def _primary_genre_token(raw_genres):
+    tokens = _extract_genre_tokens(raw_genres)
+    return tokens[0] if tokens else ""
+
+
+def _genre_match_score(preferred_genre, raw_genres):
+    if not preferred_genre:
+        return 0.0
+
+    tokens = _extract_genre_tokens(raw_genres)
+    if not tokens:
+        return 0.0
+
+    if preferred_genre == tokens[0]:
+        return 2.0
+
+    if preferred_genre in tokens[1:]:
+        return 0.5
+
+    return 0.0
+
+
 def _cold_start_recommend(user_id, top_n=5, exclude_book_ids=None):
     if exclude_book_ids is None:
         exclude_book_ids = set()
@@ -121,21 +173,18 @@ def _cold_start_recommend(user_id, top_n=5, exclude_book_ids=None):
         score = 0.0
 
         if preferred_genre:
-            genre_tokens = _extract_genre_tokens(row.get("genres", ""))
-            if preferred_genre in genre_tokens:
-                score += 2.0
+            score += _genre_match_score(preferred_genre, row.get("genres", ""))
 
         if preferred_author:
             author_text = _book_author_text(row)
             if preferred_author in author_text:
-                score += 3.0
+                score += 4.0
 
         if score > 0:
             ranked.append((book_id, score))
 
     if not ranked:
-        popularity = ratings.groupby("book_id")["rating"].mean().sort_values(ascending=False)
-        ranked = [(book_id, float(score)) for book_id, score in popularity.items()]
+        return []
 
     ranked = sorted(ranked, key=lambda x: x[1], reverse=True)
 
@@ -158,14 +207,7 @@ def _compute_hybrid_scores(user_id):
     user_ratings_db = _get_user_books_from_db(user_id)
     user_book_ids_read = set(user_ratings_db.keys())
 
-    # Fall back to model ratings if user has no live shelf entries
-    if not user_book_ids_read:
-        user_books_fallback = ratings[ratings["user_id"] == user_id]["book_id"]
-        user_book_ids_read = set(user_books_fallback.tolist())
-        for bid in user_book_ids_read:
-            user_ratings_db[bid] = 3  # neutral fallback rating
-
-    # Cold-start: no reading history yet, use registration preferences.
+    # Cold-start: no live reading history yet, use registration preferences only.
     if not user_ratings_db:
         return None, user_book_ids_read
 
@@ -238,14 +280,12 @@ def hybrid_recommend_score_map(user_id, exclude_read=True):
 
             score = 0.0
             if preferred_genre:
-                genre_tokens = _extract_genre_tokens(row.get("genres", ""))
-                if preferred_genre in genre_tokens:
-                    score += 2.0
+                score += _genre_match_score(preferred_genre, row.get("genres", ""))
 
             if preferred_author:
                 author_text = _book_author_text(row)
                 if preferred_author in author_text:
-                    score += 3.0
+                    score += 4.0
 
             fallback_scores[str(book_id)] = float(score)
 

@@ -21,10 +21,10 @@ def register_user(username, password, favorite_genre, favorite_author):
 
     cursor.execute(
         """
-        INSERT INTO users(username, password, favorite_genre, favorite_author)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO users(username, password, favorite_genre, favorite_author, shelf_initialized)
+        VALUES (%s, %s, %s, %s, %s)
         """,
-        (username, password, favorite_genre, favorite_author),
+        (username, password, favorite_genre, favorite_author, 1),
     )
 
     conn.commit()
@@ -213,13 +213,11 @@ class RegisterWindow(QWidget):
             QMessageBox.warning(self, "Validation", "Username and password are required.")
             return
 
-        if favorite_genre == "Select a genre" or favorite_author == "Select an author":
-            QMessageBox.warning(
-                self,
-                "Validation",
-                "Please choose your favorite genre and author.",
-            )
-            return
+        if favorite_genre == "Select a genre":
+            favorite_genre = ""
+
+        if favorite_author == "Select an author":
+            favorite_author = ""
 
         try:
             register_user(username, password, favorite_genre, favorite_author)
