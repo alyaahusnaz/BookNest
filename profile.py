@@ -140,6 +140,14 @@ class ProfileDialog(QDialog):
         self.username_input.textChanged.connect(self._refresh_preview)
         form.addRow("Username", self.username_input)
 
+        self.favorite_genre_input = QLineEdit((self.user_profile.get("favorite_genre") or "").strip())
+        self.favorite_genre_input.setPlaceholderText("e.g. Fantasy")
+        form.addRow("Favorite Genre", self.favorite_genre_input)
+
+        self.favorite_author_input = QLineEdit((self.user_profile.get("favorite_author") or "").strip())
+        self.favorite_author_input.setPlaceholderText("e.g. Agatha Christie")
+        form.addRow("Favorite Author", self.favorite_author_input)
+
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setPlaceholderText("Leave blank to keep current password")
@@ -184,6 +192,8 @@ class ProfileDialog(QDialog):
 
     def _handle_save(self):
         username = self.username_input.text().strip()
+        favorite_genre = self.favorite_genre_input.text().strip()
+        favorite_author = self.favorite_author_input.text().strip()
         new_password = self.password_input.text()
         confirm_password = self.confirm_password_input.text()
 
@@ -205,7 +215,14 @@ class ProfileDialog(QDialog):
             return
 
         try:
-            update_user_profile(self.user_id, username, password_to_save, self.profile_image_path)
+            update_user_profile(
+                self.user_id,
+                username,
+                password_to_save,
+                self.profile_image_path,
+                favorite_genre,
+                favorite_author,
+            )
         except ValueError as exc:
             QMessageBox.warning(self, "Validation", str(exc))
             return

@@ -46,6 +46,7 @@ def create_tables():
         id INT AUTO_INCREMENT PRIMARY KEY,
         username VARCHAR(255) UNIQUE,
         password VARCHAR(255),
+        role VARCHAR(50) NOT NULL DEFAULT 'user',
         profile_image TEXT,
         favorite_genre VARCHAR(255),
         favorite_author VARCHAR(255)
@@ -88,6 +89,7 @@ def create_tables():
     _ensure_users_columns(cursor)
     _ensure_books_columns(cursor)
     _ensure_key_column_types(cursor)
+    _ensure_admin_user(cursor)
 
     conn.commit()
     conn.close()
@@ -97,6 +99,8 @@ def create_tables():
 
 def _ensure_users_columns(cursor):
     existing_cols = _get_table_columns(cursor, "users")
+    if "role" not in existing_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN role VARCHAR(50) NOT NULL DEFAULT 'user'")
     if "profile_image" not in existing_cols:
         cursor.execute("ALTER TABLE users ADD COLUMN profile_image TEXT")
     if "favorite_genre" not in existing_cols:
@@ -121,6 +125,28 @@ def _ensure_users_columns(cursor):
     )
 
 
+def _ensure_admin_user(cursor):
+    cursor.execute(
+        "SELECT id FROM users WHERE username = %s LIMIT 1",
+        ("ali",),
+    )
+    row = cursor.fetchone()
+    if row:
+        cursor.execute(
+            "UPDATE users SET role = 'admin', password = %s WHERE username = %s",
+            ("admin123", "ali"),
+        )
+        return
+
+    cursor.execute(
+        """
+        INSERT INTO users (username, password, role, favorite_genre, favorite_author)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        ("ali", "admin123", "admin", None, None),
+    )
+
+
 def get_user_profile(user_id):
     conn = connect()
     cursor = conn.cursor(dictionary=True)
@@ -129,7 +155,7 @@ def get_user_profile(user_id):
     conn.commit()
 
     cursor.execute(
-        "SELECT id, username, password, profile_image FROM users WHERE id = %s",
+        "SELECT id, username, password, role, profile_image, favorite_genre, favorite_author FROM users WHERE id = %s",
         (user_id,),
     )
     user = cursor.fetchone()
@@ -138,7 +164,7 @@ def get_user_profile(user_id):
     return user
 
 
-def update_user_profile(user_id, username, password, profile_image):
+def update_user_profile(user_id, username, password, profile_image, favorite_genre, favorite_author):
     conn = connect()
     cursor = conn.cursor()
 
@@ -156,10 +182,22 @@ def update_user_profile(user_id, username, password, profile_image):
     cursor.execute(
         """
         UPDATE users
-        SET username = %s, password = %s, profile_image = %s
+        SET
+            username = %s,
+            password = %s,
+            profile_image = %s,
+            favorite_genre = %s,
+            favorite_author = %s
         WHERE id = %s
         """,
-        (username, password, profile_image or None, user_id),
+        (
+            username,
+            password,
+            profile_image or None,
+            (favorite_genre or "").strip() or None,
+            (favorite_author or "").strip() or None,
+            user_id,
+        ),
     )
 
     conn.commit()

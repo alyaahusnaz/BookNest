@@ -1,9 +1,14 @@
+import ast
 import csv
+import threading
+import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QObject, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -21,7 +26,41 @@ from PySide6.QtWidgets import (
 
 from database import connect, get_user_profile
 from profile import ClickableAvatarLabel, ProfileDialog, apply_user_avatar
+from recommender.recommender import hybrid_recommend_score_map
 from window_state import show_with_parent_window_state
+
+
+class CoverLabel(QLabel):
+    """Async cover image: shows a placeholder then swaps in the real image."""
+
+    class _Bridge(QObject):
+        loaded = Signal(bytes)
+
+    def __init__(self, url: str, height: int, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(height)
+        self.setAlignment(Qt.AlignCenter)
+        self.setScaledContents(False)
+        self.setStyleSheet("background: #2a3250; border-radius: 8px 8px 0 0;")
+        self._bridge = self._Bridge()
+        self._bridge.loaded.connect(self._on_loaded)
+        if url:
+            threading.Thread(target=self._download, args=(url,), daemon=True).start()
+
+    def _download(self, url: str):
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                data = response.read()
+            self._bridge.loaded.emit(data)
+        except Exception:
+            pass
+
+    def _on_loaded(self, data: bytes):
+        pixmap = QPixmap()
+        if pixmap.loadFromData(data) and not pixmap.isNull():
+            w = self.width() if self.width() > 0 else 220
+            scaled = pixmap.scaled(w, self.height(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            self.setPixmap(scaled)
 
 
 def post_book(seller_id, book_id, price):
@@ -57,8 +96,13 @@ class MarketplaceWindow(QWidget):
     def __init__(self, user_id):
         super().__init__()
         self.user_id = user_id
+        self.market_section = "my"
+        self._my_has_items = False
+        self._other_has_items = False
+        self._hybrid_match_map = {}
         self.user_profile = get_user_profile(user_id) or {}
         self.books_index = self._load_books_index()
+        self.book_metadata_index = self._load_book_metadata_index()
 
         self.setWindowTitle("BookNest Marketplace")
         self.resize(980, 700)
@@ -189,11 +233,6 @@ class MarketplaceWindow(QWidget):
         layout.addWidget(self.sell_only)
         layout.addWidget(self.both_types)
 
-        apply_btn = QPushButton("Apply Filters")
-        apply_btn.setObjectName("primaryDarkBtn")
-        apply_btn.clicked.connect(self.refresh_cards)
-        layout.addWidget(apply_btn)
-
         layout.addStretch()
         return card
 
@@ -224,7 +263,7 @@ class MarketplaceWindow(QWidget):
         container.addWidget(banner)
 
         toolbar = QHBoxLayout()
-        available = QLabel("All Available Books")
+        available = QLabel("Marketplace Listings")
         available.setObjectName("smallHeader")
         toolbar.addWidget(available)
         toolbar.addStretch()
@@ -240,22 +279,57 @@ class MarketplaceWindow(QWidget):
         toolbar.addWidget(refresh_btn)
         container.addLayout(toolbar)
 
-        self.empty_label = QLabel("No marketplace books match your filters.")
-        self.empty_label.setObjectName("subtleText")
-        container.addWidget(self.empty_label)
+        section_tabs = QHBoxLayout()
+        section_tabs.setSpacing(8)
 
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.my_market_btn = QPushButton("My Marketplace")
+        self.my_market_btn.clicked.connect(lambda: self._set_market_section("my"))
+        section_tabs.addWidget(self.my_market_btn)
 
-        self.grid_host = QWidget()
-        self.cards_grid = QGridLayout(self.grid_host)
-        self.cards_grid.setContentsMargins(1, 1, 1, 1)
-        self.cards_grid.setHorizontalSpacing(14)
-        self.cards_grid.setVerticalSpacing(14)
+        self.other_market_btn = QPushButton("Other Marketplace")
+        self.other_market_btn.clicked.connect(lambda: self._set_market_section("other"))
+        section_tabs.addWidget(self.other_market_btn)
 
-        self.scroll.setWidget(self.grid_host)
-        container.addWidget(self.scroll, 1)
+        section_tabs.addStretch()
+        container.addLayout(section_tabs)
+
+        self.my_header = QLabel("My Marketplace (My Books For Sale/Swap)")
+        self.my_header.setObjectName("fieldLabel")
+        container.addWidget(self.my_header)
+
+        self.my_empty_label = QLabel("You have no listings that match current filters.")
+        self.my_empty_label.setObjectName("subtleText")
+        container.addWidget(self.my_empty_label)
+
+        self.my_scroll = QScrollArea()
+        self.my_scroll.setWidgetResizable(True)
+        self.my_scroll.setFrameShape(QFrame.NoFrame)
+        self.my_grid_host = QWidget()
+        self.my_cards_grid = QGridLayout(self.my_grid_host)
+        self.my_cards_grid.setContentsMargins(1, 1, 1, 1)
+        self.my_cards_grid.setHorizontalSpacing(14)
+        self.my_cards_grid.setVerticalSpacing(14)
+        self.my_scroll.setWidget(self.my_grid_host)
+        container.addWidget(self.my_scroll, 1)
+
+        self.other_header = QLabel("Other Marketplace (Books From Other Users)")
+        self.other_header.setObjectName("fieldLabel")
+        container.addWidget(self.other_header)
+
+        self.other_empty_label = QLabel("No other-user listings match current filters.")
+        self.other_empty_label.setObjectName("subtleText")
+        container.addWidget(self.other_empty_label)
+
+        self.other_scroll = QScrollArea()
+        self.other_scroll.setWidgetResizable(True)
+        self.other_scroll.setFrameShape(QFrame.NoFrame)
+        self.other_grid_host = QWidget()
+        self.other_cards_grid = QGridLayout(self.other_grid_host)
+        self.other_cards_grid.setContentsMargins(1, 1, 1, 1)
+        self.other_cards_grid.setHorizontalSpacing(14)
+        self.other_cards_grid.setVerticalSpacing(14)
+        self.other_scroll.setWidget(self.other_grid_host)
+        container.addWidget(self.other_scroll, 1)
 
         load_more = QPushButton("Load More Books")
         load_more.setObjectName("mutedBtn")
@@ -266,6 +340,8 @@ class MarketplaceWindow(QWidget):
         shell_layout = QVBoxLayout(shell)
         shell_layout.setContentsMargins(0, 0, 0, 0)
         shell_layout.addLayout(container)
+
+        self._set_market_section(self.market_section)
         return shell
 
     def _load_books_index(self):
@@ -303,13 +379,80 @@ class MarketplaceWindow(QWidget):
 
         return {}
 
+    def _load_book_metadata_index(self):
+        conn = connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                book_id,
+                COALESCE(authors, ''),
+                COALESCE(description, ''),
+                COALESCE(cover_img, ''),
+                COALESCE(genres, '')
+            FROM books
+            """
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        result = {}
+        for book_id, authors, description, cover_img, genres in rows:
+            result[str(book_id)] = {
+                "authors": (authors or "").strip(),
+                "description": (description or "").strip(),
+                "cover_img": (cover_img or "").strip(),
+                "genres": (genres or "").strip(),
+            }
+        return result
+
+    def _genre_matches(self, raw_genres, selected_genre):
+        if selected_genre == "all genres":
+            return True
+
+        target = "".join(ch for ch in selected_genre.lower() if ch.isalnum())
+        if not target:
+            return True
+
+        text = (raw_genres or "").strip()
+        genres = []
+
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, list):
+                    genres = [str(value).strip() for value in parsed if str(value).strip()]
+            except (ValueError, SyntaxError):
+                pass
+
+        if not genres:
+            genres = [part.strip().strip("'\"") for part in text.strip("[]").split(",") if part.strip()]
+
+        for genre in genres:
+            normalized = "".join(ch for ch in genre.lower() if ch.isalnum())
+            if target in normalized or normalized in target:
+                return True
+
+        return False
+
     def _get_market_items(self):
         rows = browse_marketplace()
+        if not self._hybrid_match_map:
+            self._hybrid_match_map = hybrid_recommend_score_map(self.user_id, exclude_read=True)
+
+        max_score = max(self._hybrid_match_map.values()) if self._hybrid_match_map else 0.0
+
         items = []
         for seller_id, book_id, price in rows:
             book_id_text = str(book_id)
             title = self.books_index.get(book_id_text, f"Book {book_id_text}")
-            match = 82 + (abs(hash(book_id_text)) % 17)
+            metadata = self.book_metadata_index.get(book_id_text, {})
+            raw_score = self._hybrid_match_map.get(book_id_text, 0.0)
+            if max_score > 0:
+                match = int(round((raw_score / max_score) * 100))
+                match = max(1, min(100, match))
+            else:
+                match = 0
             distance = 1.0 + (abs(hash(book_id_text + "d")) % 30) / 10
             condition_set = ["Like New", "Very Good", "Good"]
             condition = condition_set[abs(hash(book_id_text + "c")) % len(condition_set)]
@@ -319,6 +462,10 @@ class MarketplaceWindow(QWidget):
                     "seller_id": seller_id,
                     "book_id": book_id_text,
                     "title": title,
+                    "authors": metadata.get("authors") or "Unknown author",
+                    "description": metadata.get("description") or "No description available.",
+                    "cover_img": metadata.get("cover_img") or "",
+                    "genres": metadata.get("genres") or "",
                     "price": float(price) if price is not None else 0.0,
                     "match": match,
                     "distance": distance,
@@ -328,12 +475,44 @@ class MarketplaceWindow(QWidget):
 
         return items
 
+    def _get_user_bookshelf_choices(self):
+        conn = connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                CAST(s.book_id AS CHAR),
+                COALESCE(NULLIF(b.title, ''), '')
+            FROM bookshelf s
+            LEFT JOIN books b ON CAST(b.book_id AS CHAR) = CAST(s.book_id AS CHAR)
+            WHERE s.user_id = %s
+            ORDER BY s.id DESC
+            """,
+            (self.user_id,),
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        choices = []
+        seen_book_ids = set()
+        for book_id, title in rows:
+            book_id_text = str(book_id)
+            if book_id_text in seen_book_ids:
+                continue
+            seen_book_ids.add(book_id_text)
+
+            title_text = (title or "").strip() or self.books_index.get(book_id_text, f"Book {book_id_text}")
+            choices.append({"book_id": book_id_text, "title": title_text})
+
+        return choices
+
     def refresh_cards(self):
         items = self._get_market_items()
 
         query = self.search_input.text().strip().lower()
         max_price = self.max_price.value()
         condition_filter = self.condition_box.currentText().strip().lower()
+        genre_filter = self.genre_box.currentText().strip().lower()
 
         filtered = []
         for item in items:
@@ -344,6 +523,9 @@ class MarketplaceWindow(QWidget):
                 continue
 
             if condition_filter != "all conditions" and item["condition"].lower() != condition_filter:
+                continue
+
+            if not self._genre_matches(item.get("genres", ""), genre_filter):
                 continue
 
             if self.swap_only.isChecked() and item["price"] > 0:
@@ -360,58 +542,116 @@ class MarketplaceWindow(QWidget):
         else:
             filtered.sort(key=lambda x: x["match"], reverse=True)
 
-        self._render_cards(filtered)
+        my_items = [item for item in filtered if int(item["seller_id"]) == int(self.user_id)]
+        other_items = [item for item in filtered if int(item["seller_id"]) != int(self.user_id)]
 
-    def _render_cards(self, items):
-        while self.cards_grid.count():
-            child = self.cards_grid.takeAt(0)
+        self._my_has_items = bool(my_items)
+        self._other_has_items = bool(other_items)
+
+        self._render_cards(self.my_cards_grid, self.my_empty_label, my_items)
+        self._render_cards(self.other_cards_grid, self.other_empty_label, other_items)
+        self._apply_market_section_visibility()
+
+    def _set_market_section(self, section):
+        if section not in {"my", "other"}:
+            return
+        self.market_section = section
+        self._apply_market_section_visibility()
+
+        if hasattr(self, "my_market_btn") and hasattr(self, "other_market_btn"):
+            if section == "my":
+                self.my_market_btn.setObjectName("scopeBtnActive")
+                self.other_market_btn.setObjectName("scopeBtn")
+            else:
+                self.my_market_btn.setObjectName("scopeBtn")
+                self.other_market_btn.setObjectName("scopeBtnActive")
+
+            self.my_market_btn.style().unpolish(self.my_market_btn)
+            self.my_market_btn.style().polish(self.my_market_btn)
+            self.other_market_btn.style().unpolish(self.other_market_btn)
+            self.other_market_btn.style().polish(self.other_market_btn)
+
+    def _apply_market_section_visibility(self):
+        is_my = self.market_section == "my"
+
+        if hasattr(self, "my_header"):
+            self.my_header.setVisible(is_my)
+        if hasattr(self, "my_empty_label"):
+            self.my_empty_label.setVisible(is_my and not self._my_has_items)
+        if hasattr(self, "my_scroll"):
+            self.my_scroll.setVisible(is_my)
+
+        if hasattr(self, "other_header"):
+            self.other_header.setVisible(not is_my)
+        if hasattr(self, "other_empty_label"):
+            self.other_empty_label.setVisible((not is_my) and not self._other_has_items)
+        if hasattr(self, "other_scroll"):
+            self.other_scroll.setVisible(not is_my)
+
+    def _render_cards(self, target_grid, target_empty_label, items):
+        while target_grid.count():
+            child = target_grid.takeAt(0)
             widget = child.widget()
             if widget:
                 widget.deleteLater()
 
-        self.empty_label.setVisible(not items)
+        target_empty_label.setVisible(not items)
 
         for idx, item in enumerate(items):
             row = idx // 3
             col = idx % 3
-            self.cards_grid.addWidget(self._build_book_card(item), row, col)
+            target_grid.addWidget(self._build_book_card(item), row, col)
 
     def _build_book_card(self, item):
         card = QFrame()
         card.setObjectName("bookCard")
-        card.setMinimumWidth(190)
+        card.setFixedSize(270, 380)
 
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(0, 0, 0, 8)
+        layout.setContentsMargins(0, 0, 0, 10)
         layout.setSpacing(6)
 
-        cover = QLabel(item["title"])
+        cover = CoverLabel(item.get("cover_img", ""), 140)
         cover.setObjectName("cover")
-        cover.setWordWrap(True)
-        cover.setAlignment(Qt.AlignCenter)
-        cover.setFixedHeight(150)
         layout.addWidget(cover)
 
-        stats_row = QHBoxLayout()
-        match_chip = QLabel(f"{item['match']}% Match")
-        match_chip.setObjectName("matchChip")
-        distance = QLabel(f"{item['distance']:.1f} km away")
-        distance.setObjectName("distanceText")
-        stats_row.addWidget(match_chip)
-        stats_row.addStretch()
-        stats_row.addWidget(distance)
-        stats_row.setContentsMargins(8, 0, 8, 0)
-        layout.addLayout(stats_row)
+        is_my_listing = int(item.get("seller_id", -1)) == int(self.user_id)
+        if not is_my_listing:
+            stats_row = QHBoxLayout()
+            match_chip = QLabel(f"{item['match']}% Match")
+            match_chip.setObjectName("matchChip")
+            stats_row.addWidget(match_chip)
+            stats_row.addStretch()
+            stats_row.setContentsMargins(8, 0, 8, 0)
+            layout.addLayout(stats_row)
 
         title = QLabel(item["title"])
         title.setObjectName("cardTitle")
+        title.setWordWrap(True)
         title.setContentsMargins(8, 0, 8, 0)
         layout.addWidget(title)
 
-        author = QLabel(f"Seller U{item['seller_id']}")
+        author_name = (item.get("authors") or "Unknown author").split(",")[0].strip()
+        author = QLabel(f"by {author_name}")
         author.setObjectName("subtleText")
         author.setContentsMargins(8, 0, 8, 0)
         layout.addWidget(author)
+
+        description = item.get("description") or "No description available."
+        if len(description) > 96:
+            description = description[:93].rstrip() + "..."
+        description_label = QLabel(description)
+        description_label.setObjectName("cardDesc")
+        description_label.setWordWrap(True)
+        description_label.setContentsMargins(8, 0, 8, 0)
+        layout.addWidget(description_label)
+
+        seller = QLabel(f"Seller U{item['seller_id']}")
+        seller.setObjectName("distanceText")
+        seller.setContentsMargins(8, 0, 8, 0)
+        layout.addWidget(seller)
+
+        layout.addStretch()
 
         foot = QHBoxLayout()
         cond = QLabel(item["condition"])
@@ -434,17 +674,36 @@ class MarketplaceWindow(QWidget):
         dialog.setText("Fill in book listing details.")
         dialog.setIcon(QMessageBox.Information)
 
+        choices = self._get_user_bookshelf_choices()
+        if not choices:
+            QMessageBox.information(
+                self,
+                "No Shelf Books",
+                "Add a book to your shelf first, then list it in the marketplace.",
+            )
+            return
+
         form_widget = QWidget()
         form = QFormLayout(form_widget)
         form.setContentsMargins(0, 8, 0, 0)
         form.setSpacing(8)
 
-        book_id_input = QLineEdit()
+        title_input = QComboBox()
+        title_input.setEditable(True)
+        title_input.setInsertPolicy(QComboBox.NoInsert)
+        for choice in choices:
+            title_input.addItem(choice["title"], choice["book_id"])
+
+        completer = QCompleter([choice["title"] for choice in choices], title_input)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        title_input.setCompleter(completer)
+
         price_input = QDoubleSpinBox()
         price_input.setRange(0.0, 9999.0)
         price_input.setValue(0.0)
 
-        form.addRow("Book ID:", book_id_input)
+        form.addRow("Book Title:", title_input)
         form.addRow("Price (RM, 0=swap):", price_input)
 
         dialog.layout().addWidget(form_widget, 1, 0, 1, dialog.layout().columnCount())
@@ -453,9 +712,21 @@ class MarketplaceWindow(QWidget):
         if dialog.exec() != QMessageBox.Ok:
             return
 
-        book_id = book_id_input.text().strip()
+        selected_text = title_input.currentText().strip()
+        book_id = title_input.currentData()
+        for choice in choices:
+            if book_id:
+                break
+            if selected_text.lower() == choice["title"].lower():
+                book_id = choice["book_id"]
+                break
+
         if not book_id:
-            QMessageBox.warning(self, "Missing Book ID", "Book ID is required.")
+            QMessageBox.warning(
+                self,
+                "Invalid Book",
+                "Select a valid title from your bookshelf list.",
+            )
             return
 
         conn = connect()
@@ -657,6 +928,25 @@ class MarketplaceWindow(QWidget):
                 font-weight: 600;
             }
 
+            QPushButton#scopeBtn,
+            QPushButton#scopeBtnActive {
+                border-radius: 9px;
+                padding: 8px 12px;
+                font-weight: 600;
+            }
+
+            QPushButton#scopeBtn {
+                border: 1px solid #d7dced;
+                background: #ffffff;
+                color: #415075;
+            }
+
+            QPushButton#scopeBtnActive {
+                border: 1px solid #4758f5;
+                background: #4758f5;
+                color: #ffffff;
+            }
+
             QLabel#cover {
                 background: qlineargradient(
                     x1:0, y1:0, x2:1, y2:1,
@@ -687,8 +977,13 @@ class MarketplaceWindow(QWidget):
 
             QLabel#cardTitle {
                 color: #1a2134;
-                font-size: 20px;
+                font-size: 16px;
                 font-weight: 700;
+            }
+
+            QLabel#cardDesc {
+                color: #5c6688;
+                font-size: 11px;
             }
 
             QLabel#condChip {

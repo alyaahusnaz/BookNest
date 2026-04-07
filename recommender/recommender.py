@@ -151,7 +151,7 @@ def _cold_start_recommend(user_id, top_n=5, exclude_book_ids=None):
     return recommendations
 
 
-def hybrid_recommend(user_id, top_n=5):
+def _compute_hybrid_scores(user_id):
 
     # ---------- LIVE SHELF ----------
     # Pull what THIS user has actually read/rated from SQLite bookshelf
@@ -167,11 +167,7 @@ def hybrid_recommend(user_id, top_n=5):
 
     # Cold-start: no reading history yet, use registration preferences.
     if not user_ratings_db:
-        return _cold_start_recommend(
-            user_id,
-            top_n=top_n,
-            exclude_book_ids=user_book_ids_read,
-        )
+        return None, user_book_ids_read
 
     # ---------- CONTENT SCORE ----------
     content_scores = {}
@@ -217,6 +213,62 @@ def hybrid_recommend(user_id, top_n=5):
         content = content_scores.get(book_id, 0)
         collaborative = collaborative_scores.get(book_id, 0)
         final_scores[book_id] = 0.6 * content + 0.4 * collaborative
+
+    return final_scores, user_book_ids_read
+
+
+def hybrid_recommend_score_map(user_id, exclude_read=True):
+    """
+    Return per-book hybrid scores for the given user.
+    Keys are book_id as strings, values are raw hybrid scores.
+    """
+    final_scores, user_book_ids_read = _compute_hybrid_scores(user_id)
+
+    if final_scores is None:
+        # Cold start path: approximate scores from the same preference signals.
+        preferred_genre, preferred_author = _get_user_preferences_from_db(user_id)
+        preferred_genre = preferred_genre.lower()
+        preferred_author = preferred_author.lower()
+
+        fallback_scores = {}
+        for _, row in books.iterrows():
+            book_id = row.get("book_id")
+            if exclude_read and book_id in user_book_ids_read:
+                continue
+
+            score = 0.0
+            if preferred_genre:
+                genre_tokens = _extract_genre_tokens(row.get("genres", ""))
+                if preferred_genre in genre_tokens:
+                    score += 2.0
+
+            if preferred_author:
+                author_text = _book_author_text(row)
+                if preferred_author in author_text:
+                    score += 3.0
+
+            fallback_scores[str(book_id)] = float(score)
+
+        return fallback_scores
+
+    score_map = {}
+    for book_id, score in final_scores.items():
+        if exclude_read and book_id in user_book_ids_read:
+            continue
+        score_map[str(book_id)] = float(score)
+
+    return score_map
+
+
+def hybrid_recommend(user_id, top_n=5):
+    final_scores, user_book_ids_read = _compute_hybrid_scores(user_id)
+
+    if final_scores is None:
+        return _cold_start_recommend(
+            user_id,
+            top_n=top_n,
+            exclude_book_ids=user_book_ids_read,
+        )
 
     recommended = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)
 

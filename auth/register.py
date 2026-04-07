@@ -1,6 +1,8 @@
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
+    QFrame,
     QLineEdit,
     QPushButton,
     QLabel,
@@ -66,41 +68,140 @@ class RegisterWindow(QWidget):
 
         self.setWindowTitle("BookNest Register")
         self.resize(980, 700)
+        self.setMinimumSize(760, 560)
 
-        layout = QVBoxLayout()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 28, 28, 28)
 
-        layout.addWidget(QLabel("Username"))
+        wrapper = QHBoxLayout()
+        wrapper.addStretch(1)
+
+        card = QFrame()
+        card.setObjectName("registerCard")
+        card.setMaximumWidth(560)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(34, 30, 34, 30)
+        layout.setSpacing(12)
+
+        title = QLabel("Create Your BookNest Account")
+        title.setObjectName("titleLabel")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Set up your profile to get better recommendations.")
+        subtitle.setObjectName("subtitleLabel")
+        layout.addWidget(subtitle)
+
+        username_label = QLabel("Username")
+        username_label.setObjectName("fieldLabel")
+        layout.addWidget(username_label)
         self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Choose a username")
         layout.addWidget(self.username_input)
 
-        layout.addWidget(QLabel("Password"))
+        password_label = QLabel("Password")
+        password_label.setObjectName("fieldLabel")
+        layout.addWidget(password_label)
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setPlaceholderText("Create a password")
         layout.addWidget(self.password_input)
 
         genres, authors = get_registration_options()
 
-        layout.addWidget(QLabel("Favorite Genre"))
+        genre_label = QLabel("Favorite Genre")
+        genre_label.setObjectName("fieldLabel")
+        layout.addWidget(genre_label)
         self.genre_box = QComboBox()
         self.genre_box.addItem("Select a genre")
         self.genre_box.addItems(genres)
         layout.addWidget(self.genre_box)
 
-        layout.addWidget(QLabel("Favorite Author"))
+        author_label = QLabel("Favorite Author")
+        author_label.setObjectName("fieldLabel")
+        layout.addWidget(author_label)
         self.author_box = QComboBox()
         self.author_box.addItem("Select an author")
         self.author_box.addItems(authors)
         layout.addWidget(self.author_box)
 
         self.register_button = QPushButton("Create Account")
+        self.register_button.setObjectName("primaryButton")
         self.register_button.clicked.connect(self.handle_register)
         layout.addWidget(self.register_button)
 
         self.back_button = QPushButton("Back to Login")
+        self.back_button.setObjectName("secondaryButton")
         self.back_button.clicked.connect(self.open_login)
         layout.addWidget(self.back_button)
 
-        self.setLayout(layout)
+        wrapper.addWidget(card)
+        wrapper.addStretch(1)
+        root.addStretch(1)
+        root.addLayout(wrapper)
+        root.addStretch(1)
+
+        self.setStyleSheet(
+            """
+            QWidget {
+                background-color: #f1f4f9;
+                color: #1d2438;
+                font-size: 13px;
+            }
+            #registerCard {
+                background: #ffffff;
+                border: 1px solid #d6dce8;
+                border-radius: 14px;
+            }
+            #titleLabel {
+                font-size: 26px;
+                font-weight: 700;
+                color: #11172b;
+                padding-bottom: 2px;
+            }
+            #subtitleLabel {
+                font-size: 13px;
+                color: #4e5977;
+                padding-bottom: 8px;
+            }
+            #fieldLabel {
+                font-weight: 600;
+                color: #273252;
+                padding-top: 4px;
+            }
+            QLineEdit,
+            QComboBox {
+                border: 1px solid #cdd5e3;
+                border-radius: 8px;
+                padding: 10px 12px;
+                background: #fcfdff;
+            }
+            QLineEdit:focus,
+            QComboBox:focus {
+                border: 1px solid #2f6fdb;
+            }
+            QPushButton {
+                border: none;
+                border-radius: 8px;
+                min-height: 38px;
+                font-weight: 600;
+            }
+            #primaryButton {
+                margin-top: 8px;
+                background: #245dc9;
+                color: white;
+            }
+            #primaryButton:hover {
+                background: #1e50ac;
+            }
+            #secondaryButton {
+                background: #e8edf7;
+                color: #233252;
+            }
+            #secondaryButton:hover {
+                background: #dbe4f4;
+            }
+            """
+        )
 
     def handle_register(self):
         username = self.username_input.text().strip()

@@ -1,4 +1,5 @@
 import csv
+import ast
 import json
 import threading
 import urllib.request
@@ -226,6 +227,7 @@ class BookRecommendationApp(QWidget):
         self.title_to_book_id = {}
         for book_id, title in self.books_index.items():
             self.title_to_book_id.setdefault(title, book_id)
+        self.recommendation_limit = 20
 
         self.setWindowTitle("BookNest Recommendations")
         self.resize(980, 700)
@@ -303,16 +305,15 @@ class BookRecommendationApp(QWidget):
         text_col.addWidget(title)
 
         subtitle = QLabel(
-            "Discover your next favorite book with hybrid recommendations "
-            "that combine collaborative and content-based signals."
+            "Discover your next favorite book with hybrid recommendations. "
         )
         subtitle.setWordWrap(True)
         subtitle.setObjectName("bannerSubtitle")
         text_col.addWidget(subtitle)
 
-        chips = QLabel("Hybrid AI Technology   |   NLP Processing   |   TF-IDF Analysis")
-        chips.setObjectName("bannerChips")
-        text_col.addWidget(chips)
+        # chips = QLabel("Hybrid AI Technology   |   NLP Processing   |   TF-IDF Analysis")
+        # chips.setObjectName("bannerChips")
+        # text_col.addWidget(chips)
 
         layout.addLayout(text_col, 3)
 
@@ -327,7 +328,7 @@ class BookRecommendationApp(QWidget):
     def _build_toolbar(self):
         toolbar = QHBoxLayout()
 
-        title = QLabel("Your Personalized Recommendations")
+        title = QLabel("Recommendation Books")
         title.setObjectName("sectionTitle")
         toolbar.addWidget(title)
 
@@ -369,7 +370,7 @@ class BookRecommendationApp(QWidget):
 
         load_more = QPushButton("Load More Recommendations")
         load_more.setObjectName("mutedBtn")
-        load_more.clicked.connect(self.refresh_recommendations)
+        load_more.clicked.connect(self.load_more_recommendations)
         layout.addWidget(load_more, alignment=Qt.AlignHCenter)
 
         return wrapper
@@ -424,7 +425,8 @@ class BookRecommendationApp(QWidget):
             SELECT
                 book_id,
                 COALESCE(authors, ''),
-                COALESCE(description, '')
+                COALESCE(description, ''),
+                COALESCE(genres, '')
             FROM books
             """
         )
@@ -432,12 +434,33 @@ class BookRecommendationApp(QWidget):
         conn.close()
 
         result = {}
-        for book_id, authors, description in rows:
+        for book_id, authors, description, genres in rows:
             result[str(book_id)] = {
                 "authors": (authors or "").strip(),
                 "description": (description or "").strip(),
+                "genres": (genres or "").strip(),
             }
         return result
+
+    def _primary_genre(self, raw_genres):
+        text = (raw_genres or "").strip()
+        if not text:
+            return "General"
+
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = ast.literal_eval(text)
+                if isinstance(parsed, list) and parsed:
+                    first = str(parsed[0]).strip()
+                    return first if first else "General"
+            except (ValueError, SyntaxError):
+                pass
+
+        parts = [part.strip().strip("'\"") for part in text.strip("[]").split(",") if part.strip()]
+        if parts:
+            return parts[0]
+
+        return "General"
 
     def _mock_metadata(self, title):
         score = abs(hash(title))
@@ -454,9 +477,12 @@ class BookRecommendationApp(QWidget):
             "genre": genre,
         }
 
-    def _get_recommendation_items(self):
+    def _get_recommendation_items(self, top_n=None):
+        if top_n is None:
+            top_n = self.recommendation_limit
+
         try:
-            titles = hybrid_recommend(self.user_id, top_n=20)
+            titles = hybrid_recommend(self.user_id, top_n=top_n)
         except Exception as exc:
             QMessageBox.warning(self, "Recommendation Error", str(exc))
             return []
@@ -466,6 +492,7 @@ class BookRecommendationApp(QWidget):
             meta = self._mock_metadata(title)
             book_id = self.title_to_book_id.get(title, "")
             book_meta = self.book_metadata_index.get(book_id, {})
+            real_genre = self._primary_genre(book_meta.get("genres", ""))
             items.append(
                 {
                     "title": title,
@@ -473,7 +500,7 @@ class BookRecommendationApp(QWidget):
                     "rating": meta["rating"],
                     "votes": meta["votes"],
                     "match": meta["match"],
-                    "genre": meta["genre"],
+                    "genre": real_genre,
                     "cover_img": self.cover_index.get(book_id, ""),
                     "authors": book_meta.get("authors") or "Unknown author",
                     "description": book_meta.get("description") or "No description available.",
@@ -498,6 +525,10 @@ class BookRecommendationApp(QWidget):
             items.sort(key=lambda x: x["rating"], reverse=True)
 
         self._render_cards(items)
+
+    def load_more_recommendations(self):
+        self.recommendation_limit += 20
+        self.refresh_recommendations()
 
     def _render_cards(self, items):
         while self.grid.count():
@@ -1031,11 +1062,6 @@ class DashboardWindow(QWidget):
 
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
-
-        self.scan_btn = QPushButton("Scan Book")
-        self.scan_btn.setObjectName("primaryBtn")
-        self.scan_btn.clicked.connect(self.show_not_implemented)
-        toolbar.addWidget(self.scan_btn)
 
         self.add_manual_btn = QPushButton("Add Manually")
         self.add_manual_btn.setObjectName("outlineBtn")
@@ -1763,8 +1789,8 @@ class DashboardWindow(QWidget):
 
             QPushButton#outlineBtn {
                 border: 1px solid #2f66f3;
-                background: #ffffff;
-                color: #2f66f3;
+                background: #2f66f3;
+                color: #ffffff;
                 border-radius: 10px;
                 padding: 8px 14px;
                 font-weight: 600;

@@ -17,8 +17,8 @@ books = pd.read_csv("books_6users.csv")
 for _, row in books.iterrows():
 
     query = """
-    INSERT INTO books (book_id, title, authors, description)
-    VALUES (%s, %s, %s, %s)
+    INSERT INTO books (book_id, title, authors, description, genres)
+    VALUES (%s, %s, %s, %s, %s)
     """
 
     # sanitize missing values so MySQL gets NULL instead of literal NaN
@@ -26,8 +26,9 @@ for _, row in books.iterrows():
     title = None if pd.isna(row["title"]) else row["title"]
     authors = None if pd.isna(row.get("author")) else row.get("author")
     description = None if pd.isna(row.get("description")) else row.get("description")
+    genres = None if pd.isna(row.get("genres")) else row.get("genres")
 
-    values = (book_id, title, authors, description)
+    values = (book_id, title, authors, description, genres)
 
     cursor.execute(query, values)
 
